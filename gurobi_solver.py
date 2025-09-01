@@ -8,7 +8,7 @@ References to the paper (prima.cpp / Halda):
 - RAM/VRAM bounds (z, z_gpu) and P^gpu_n                 [App. A.3]
 - Case constraints (M1..M4) and GPU bounds: (28)-(37)    [App. A.3]
 - Coefficients b', α_m, β_m, ξ_m and constants (Eq. 21)  [App. A.3]
-- Algorithm 1 (HALDA), lines 1–17                        [Sec. 3.3]
+- Algorithm 1 (HALDA), lines 1-17                        [Sec. 3.3]
 """
 
 from __future__ import annotations
@@ -20,11 +20,6 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-
-# ---------------------------
-# Profiling -> parameter I/O
-# ---------------------------
-
 
 # --------------------------------------
 # Utility: divisors used as k candidates
@@ -240,6 +235,7 @@ def objective_vectors(
 
     for i, d in enumerate(devs):
         alpha, beta, xi = alpha_beta_xi(d, model)
+        print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
             a[i] = alpha + bprime / d.s_disk
@@ -481,12 +477,12 @@ def halda_solve(
     max_outer_iters: int = 50,
 ) -> HALDAResult:
     """
-    Full Algorithm 1 (HALDA), lines 1–17.  [Sec. 3.3]
+    Full Algorithm 1 (HALDA), lines 1-17.  [Sec. 3.3]
       - Initializes w by memory budgets; n ← 0.           (line 1)
       - Computes α,β,ξ implicitly when building a,b,c.     (line 2)
       - Enumerates valid k ∈ K_L (excluding L).           (line 3)
-      - Outer loop: assign sets, solve fixed-k ILPs,       (lines 4–16)
-        apply calibration (lines 13–15), stop on stability (lines 7–8).
+      - Outer loop: assign sets, solve fixed-k ILPs,       (lines 4-16)
+        apply calibration (lines 13-15), stop on stability (lines 7-8).
     """
     # ----- line 3: k candidates -----
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
@@ -541,14 +537,14 @@ def halda_solve(
                     sets["M4"].append(idx)
                 # Print sets for this iteration
         _print_sets(f"Iter {outer}", sets, devs)
-        # ----- lines 7–8: stop on stability of set assignment -----
+        # ----- lines 7-8: stop on stability of set assignment -----
         if prev_sets is not None and all(
             set(sets[k]) == set(prev_sets[k]) for k in ("M1", "M2", "M3", "M4")
         ):
             break
         prev_sets = {k: list(v) for k, v in sets.items()}
 
-        # ----- lines 9–12: solve fixed-k ILPs for all k ∈ K_L and pick the best -----
+        # ----- lines 9-12: solve fixed-k ILPs for all k ∈ K_L and pick the best -----
         best_this_round: Optional[ILPResult] = None
         per_k_objs: List[Tuple[int, Optional[float]]] = (
             []
@@ -577,7 +573,7 @@ def halda_solve(
         if best_this_round is None:
             raise RuntimeError("No feasible ILP found for any k this round.")
 
-        # ----- lines 13–15: calibration / forcing step -----
+        # ----- lines 13-15: calibration / forcing step -----
         # If any GPU has free VRAM but another device is overloaded (in M1∪M2∪M3), force
         # the slowest-disk overloaded device into M4, then continue outer loop.
         overloaded_any = len(sets["M1"] + sets["M2"] + sets["M3"]) > 0

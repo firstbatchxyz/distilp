@@ -16,7 +16,7 @@
     "t_kvcpy_gpu": 0.001930964843751326,
     "t_ram2vram": 0,
     "t_vram2ram": 0,
-    "t_comm": 0.004,
+    "t_comm": 0.5,
     "s_disk": 290084983.2982311,
     "d_avail_ram": 13856079872,
     "sgpu_cuda": null,
