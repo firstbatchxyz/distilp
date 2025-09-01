@@ -10,6 +10,6 @@ Then
 git clone https://github.com/firstbatchxyz/dsolver.git
 cd dsolver
 uv sync
-uv run gurobi_solver.py
+uv run python main.py --devices profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m4.json --model profiles/model_profile.json
 ```
 
