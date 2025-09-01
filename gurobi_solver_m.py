@@ -509,7 +509,7 @@ def _print_sets(label: str, sets: Dict[str, List[int]], devs: List[DeviceProfile
     print(f"  M4: {names(sets.get('M4', []))}")
 
 
-# BEING Checked
+# Checked
 def halda_solve(
     devs: List[DeviceProfile],
     model: ModelProfile,
@@ -865,4 +865,5 @@ if __name__ == "__main__":
     if result.forced_M4:
         print("Devices forced into M4 during calibration:",
               [devs[i].name for i in result.forced_M4])
+
     print("====================================\n")
