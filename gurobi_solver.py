@@ -38,6 +38,7 @@ def valid_factors_of_L(L: int) -> List[int]:
             other = L // k
             if other != k and other != L:
                 fs.append(other)
+    print(L, fs)
     return sorted(set(fs))
 
 
@@ -133,11 +134,6 @@ def _b_cio(dev: DeviceProfile, model: ModelProfile) -> float:
 
 def classify_device_case(
     dev: DeviceProfile,
-    model: ModelProfile,
-    w_m: int,
-    n_m: int,
-    k: int,
-    sdisk_threshold: Optional[float] = None,
 ) -> int:
     """
     Decide Case 1..4 for device m given tentative (w_m, n_m, k),
@@ -148,49 +144,17 @@ def classify_device_case(
     Case 3 (M3): Linux/Android          AND insufficient RAM
     Case 4 (M4): sufficient RAM OR disk too slow (s_disk < threshold)
     """
-    # Optional "slow-disk => M4" rule (paper includes "or low disk speed" in Case 4).
-    if sdisk_threshold is not None and dev.s_disk < sdisk_threshold:
-        return 4
-
-    # W = L/k, and we will compare the per-case RAM thresholds
-    W = model.L // max(1, k)
-    bprime = b_prime(model)
-    Lb = model.L * bprime  # integer-scaling factor used in constraints
-
-    # Helper to test the lower/upper bound condition with ±1 byte slack
-    def ge_strict(lhs, rhs):  # lhs >= rhs + 1
-        return lhs >= rhs + 1.0
-
-    def le_strict(lhs, rhs):  # lhs <= rhs - 1
-        return lhs <= rhs - 1.0
-
-    bcio = _b_cio(dev, model)
-    dswap = (
-        min(dev.d_bytes_can_swap, dev.d_swap_avail) if dev.os_type == "android" else 0
-    )
-
     if dev.os_type == "mac_no_metal":
-        # M1 (must overload): w_m * Lb >= W*(d_avail_ram - bcio) + 1  [Eq. (28)]
-        overload = ge_strict(w_m * Lb, W * (dev.d_avail_ram - bcio))
-        return 1 if overload else 4
+        return 1
     elif dev.os_type == "mac_metal":
-        # M2 (must overload): w_m * Lb >= W*(d_avail_metal - bcio - c_gpu) + 1  [Eq. (29)]
-        dav_metal = float(dev.d_avail_metal or 0)
-        overload = ge_strict(w_m * Lb, W * (dav_metal - bcio - dev.c_gpu))
-        return 2 if overload else 4
+        return 2
     else:
-        # Linux/Android: (w_m - n_m) * Lb >= W*(d_avail_ram + dswap - bcio) + 1  [Eq. (30)]
-        overload = ge_strict((w_m - n_m) * Lb, W * (dev.d_avail_ram + dswap - bcio))
-        return 3 if overload else 4
+        return 3
 
 
 def assign_sets(
     devs: List[DeviceProfile],
-    model: ModelProfile,
-    w: List[int],
-    n: List[int],
-    k: int,
-    sdisk_threshold: Optional[float] = None,
+
 ) -> Dict[str, List[int]]:
     """
     Partition devices into M1..M4 by the most recent (w, n, k).  [Algorithm 1, line 6]
@@ -198,11 +162,16 @@ def assign_sets(
     M1: List[int] = []
     M2: List[int] = []
     M3: List[int] = []
-    M4: List[int] = []
     for i, d in enumerate(devs):
-        case = classify_device_case(d, model, w[i], n[i], k, sdisk_threshold)
-        (M1 if case == 1 else M2 if case == 2 else M3 if case == 3 else M4).append(i)
-    return {"M1": M1, "M2": M2, "M3": M3, "M4": M4}
+        case = classify_device_case(d)
+        if case == 1:
+            M1.append(i)
+        elif case == 2:
+            M2.append(i)
+        else:
+            M3.append(i)
+
+    return {"M1": M1, "M2": M2, "M3": M3}
 
 
 # -------------------------------------------------------
@@ -238,14 +207,14 @@ def objective_vectors(
         print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
-            a[i] = alpha + bprime / d.s_disk
+            a[i] = alpha
             b[i] = 0.0
         elif i in sets["M2"]:
-            a[i] = alpha + model.b_layer / d.s_disk
+            a[i] = alpha
             b[i] = beta
         elif i in sets["M3"]:
-            a[i] = alpha + bprime / d.s_disk
-            b[i] = beta - bprime / d.s_disk
+            a[i] = alpha
+            b[i] = beta
         else:  # M4
             a[i] = alpha
             b[i] = beta
@@ -319,11 +288,12 @@ def solve_fixed_k_ilp(
            n_m = 0 if no GPU                     [Eq. (37)]
     """
     M = len(devs)
+    print(M)
     # print(M)
     W = model.L // k
     bprime = b_prime(model)
     Lb = model.L * bprime
-
+    disk_size = 2000000000000
     # Coefficients [App. A.3]
     a, b, c = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
@@ -337,8 +307,9 @@ def solve_fixed_k_ilp(
     m.Params.OutputFlag = 0
 
     # Decision variables
-    w = m.addVars(M, lb=1, vtype=GRB.INTEGER, name="w")
+    w = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="w")
     n = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="n")
+    y = m.addVars(M, vtype=GRB.BINARY, name="y")
 
     # Domain & coupling: n_m ≥ 0, w_m ≥ 1, n_m ≤ w_m ≤ L          [Eq. (7)]
     for i in range(M):
@@ -359,44 +330,24 @@ def solve_fixed_k_ilp(
 
     # Case 1 (M1): macOS no Metal, must overload:                   [Eq. (28)]
     for i in sets["M1"]:
-        rhs = W * (devs[i].d_avail_ram - bcio(i))
-        print("M1 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr(w[i] * Lb >= rhs, name=f"M1_lb[{i}]")
+        rhs = devs[i].d_avail_ram - bcio(i) + y[i] * disk_size
+        # print("M1 rhs: " + str(rhs) + "and Lb: " + str(Lb))
+        m.addConstr(w[i] * k * bprime <= rhs, name=f"M1_lb[{i}]")
 
     # Case 2 (M2): macOS with Metal, must overload:                 [Eq. (29)]
     for i in sets["M2"]:
         dav_metal = float(devs[i].d_avail_metal or 0)
-        rhs = W * (dav_metal - bcio(i) - devs[i].c_gpu)
-        print("M2 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr(w[i] * Lb >= rhs, name=f"M2_lb[{i}]")
+        rhs = dav_metal - bcio(i) - devs[i].c_gpu + y[i] * disk_size
+        # print("M2 rhs: " + str(rhs) + "and Lb: " + str(Lb))
+        m.addConstr(w[i] * k * bprime <= rhs, name=f"M2_lb[{i}]")
 
     # Case 3 (M3): Linux/Android, must overload on CPU share:       [Eq. (30)]
     for i in sets["M3"]:
         d = devs[i]
         dswap = min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
-        rhs = W * (d.d_avail_ram + dswap - bcio(i))
-        print("M3 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr((w[i] - n[i]) * Lb >= rhs, name=f"M3_lb[{i}]")
-
-    # Case 4 (M4): sufficient RAM / slow disk ⇒ upper bounds        [Eqs. (31)-(33)]
-    for i in sets["M4"]:
-        d = devs[i]
-        if d.os_type == "mac_no_metal":
-            rhs = W * (d.d_avail_ram - bcio(i))
-            print("M41 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-            m.addConstr(w[i] * Lb <= rhs, name=f"M4_mac_no_metal_ub[{i}]")
-        elif d.os_type == "mac_metal":
-            dav_metal = float(d.d_avail_metal or 0)
-            rhs = W * (dav_metal - bcio(i) - d.c_gpu)
-            print("M42 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-            m.addConstr(w[i] * Lb <= rhs, name=f"M4_mac_metal_ub[{i}]")
-        else:  # linux or android
-            dswap = (
-                min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
-            )
-            rhs = W * (d.d_avail_ram + dswap - bcio(i))
-            print("M43 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-            m.addConstr((w[i] - n[i]) * Lb <= rhs, name=f"M4_lin_and_ub[{i}]")
+        rhs = d.d_avail_ram + dswap - bcio(i) + y[i] * disk_size
+        # print("M3 rhs: " + str(rhs) + "and Lb: " + str(Lb))
+        m.addConstr((w[i] - n[i]) * k * bprime <= rhs, name=f"M3_lb[{i}]")
 
     # --- VRAM / shared memory bounds (Metal)                        [Eqs. (35)-(36)] ---
     for i in range(M):
@@ -416,6 +367,17 @@ def solve_fixed_k_ilp(
         gp.quicksum(float(a[i]) * w[i] for i in range(M))
         + gp.quicksum(float(b[i]) * n[i] for i in range(M))
     )
+    for i, d in enumerate(devs):
+
+        if i in sets["M1"]:
+            obj_affine += ((bprime / d.s_disk) * y[i] * w[i]) * k
+        elif i in sets["M2"]:
+            obj_affine += ((model.b_layer / d.s_disk) * y[i] * w[i]) * k
+
+        elif i in sets["M3"]:
+            obj_affine += ((bprime / d.s_disk) * y[i] * w[i]) * k
+            obj_affine -= ((bprime / d.s_disk) * y[i] * n[i]) * k
+
     m.setObjective(obj_affine, GRB.MINIMIZE)
     m.ObjCon = (
         k * sum(float(x) for x in c) + kappa
@@ -447,8 +409,8 @@ class HALDAResult:
     k: int  # best k
     obj_value: float  # objective value for the best (w*,n*,k)
     sets: Dict[str, List[int]]  # final sets M1..M4
-    iterations: int  # outer-loop iterations
-    forced_M4: List[int]  # indices forced into M4 during calibration
+    # iterations: int  # outer-loop iterations
+    # forced_M4: List[int]  # indices forced into M4 during calibration
 
 
 def _print_sets(
@@ -463,7 +425,6 @@ def _print_sets(
     print(f"  M1: {names(sets.get('M1', []))}")
     print(f"  M2: {names(sets.get('M2', []))}")
     print(f"  M3: {names(sets.get('M3', []))}")
-    print(f"  M4: {names(sets.get('M4', []))}")
 
 
 def halda_solve(
@@ -486,153 +447,63 @@ def halda_solve(
     """
     # ----- line 3: k candidates -----
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
-
-    # ----- line 1: initialize w proportional to memory budgets; n = 0 -----
-    def mem_cap(d: DeviceProfile) -> float:
-        if d.os_type == "mac_metal":
-            return float(d.d_avail_metal or 0)
-        if d.os_type == "android":
-            return d.d_avail_ram + min(d.d_bytes_can_swap, d.d_swap_avail)
-        return d.d_avail_ram
-
-    caps = [max(mem_cap(d), 1.0) for d in devs]
-    total = sum(caps)
-    W0 = model.L // 1  # temporary W for initialization (k=1)
-    w = [max(1, round(W0 * c / total)) for c in caps]
-    # normalize sum to W0
-    delta = W0 - sum(w)
-    for i in range(abs(delta)):
-        w[i % len(devs)] += 1 if delta > 0 else -1
-    n = [0] * len(devs)
-    # --- print initial sets (based on the initial w,n and k_init = L / sum(w)) ---
-    k_init = model.L // max(1, sum(w))
-    sets_init = assign_sets(devs, model, w, n, k_init, sdisk_threshold)
-    _print_sets("Initial", sets_init, devs)
-
-    forced_M4: List[int] = []  # Algorithm 1, line 14
-    prev_sets: Optional[Dict[str, List[int]]] = None
     best: Optional[HALDAResult] = None
 
-    for outer in range(1, max_outer_iters + 1):
-        # ----- line 5: derive W and k from current w -----
-        W = sum(w)
-        if W == 0 or model.L % W != 0:
-            # ensure W divides L; if not, reset using smallest k
-            k_now = Ks[0]
-            W = model.L // k_now
-            w = [max(1, round(W * c / total)) for c in caps]
-            delta = W - sum(w)
-            for i in range(abs(delta)):
-                w[i % len(devs)] += 1 if delta > 0 else -1
-        k_now = model.L // W
+    sets = assign_sets(devs)
+    # _print_sets(sets, devs)
 
-        # ----- line 6: assign sets M1..M4 (respect forced_M4) -----
-        sets = assign_sets(devs, model, w, n, k_now, sdisk_threshold)
-        if forced_M4:
-            for idx in forced_M4:
-                for s in ("M1", "M2", "M3"):
-                    if idx in sets[s]:
-                        sets[s].remove(idx)
-                if idx not in sets["M4"]:
-                    sets["M4"].append(idx)
-                # Print sets for this iteration
-        _print_sets(f"Iter {outer}", sets, devs)
-        # ----- lines 7-8: stop on stability of set assignment -----
-        if prev_sets is not None and all(
-            set(sets[k]) == set(prev_sets[k]) for k in ("M1", "M2", "M3", "M4")
-        ):
-            break
-        prev_sets = {k: list(v) for k, v in sets.items()}
+    best_this_round: Optional[ILPResult] = None
+    per_k_objs: List[Tuple[int, Optional[float]]] = (
+        []
+    )  # (k, obj or None if infeasible)
+    print("Objectives by k")
+    for kf in Ks:
+        try:
 
-        # ----- lines 9-12: solve fixed-k ILPs for all k ∈ K_L and pick the best -----
-        best_this_round: Optional[ILPResult] = None
-        per_k_objs: List[Tuple[int, Optional[float]]] = (
-            []
-        )  # (k, obj or None if infeasible)
-
-        print(f"\nIter {outer}: objectives by k")
-        for kf in Ks:
-            try:
-                res = solve_fixed_k_ilp(
-                    devs,
-                    model,
-                    sets,
-                    kf,
-                    time_limit=time_limit_per_k,
-                    mip_gap=mip_gap,
-                )
-                per_k_objs.append((kf, res.obj_value))
-                print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
-                if (best_this_round is None) or (
-                    res.obj_value < best_this_round.obj_value
-                ):
-                    best_this_round = res
-            except RuntimeError:
-                per_k_objs.append((kf, None))
-                print(f"  k={kf:<4d}  obj=infeasible")
-        if best_this_round is None:
-            raise RuntimeError("No feasible ILP found for any k this round.")
-
-        # ----- lines 13-15: calibration / forcing step -----
-        # If any GPU has free VRAM but another device is overloaded (in M1∪M2∪M3), force
-        # the slowest-disk overloaded device into M4, then continue outer loop.
-        overloaded_any = len(sets["M1"] + sets["M2"] + sets["M3"]) > 0
-
-        def vram_slack_bytes(i: int, n_i: int, k_fixed: int) -> float:
-            W_fixed = model.L // k_fixed
-            d = devs[i]
-            bprime = b_prime(model)
-            Lb = model.L * bprime
-            slack = 0.0
-            if d.has_cuda and d.d_avail_cuda is not None:
-                slack = max(slack, W_fixed * (d.d_avail_cuda - d.c_gpu) - n_i * Lb)
-            if d.has_metal and d.d_avail_metal is not None:
-                head = 1.0 if d.is_head else 0.0
-                slack = max(
-                    slack,
-                    W_fixed * (d.d_avail_metal - d.c_gpu - model.b_out * head)
-                    - n_i * Lb,
-                )
-            return slack
-
-        any_free_vram = any(
-            vram_slack_bytes(i, best_this_round.n[i], best_this_round.k) > 1.0
-            for i in range(len(devs))
-        )
-        if overloaded_any and any_free_vram:
-            candidates = sets["M1"] + sets["M2"] + sets["M3"]
-            if candidates:
-                slowest = min(candidates, key=lambda idx: devs[idx].s_disk)
-                if slowest not in forced_M4:
-                    forced_M4.append(slowest)
-            continue  # go re-assign sets with this forced M4 update
-
-        # ----- line 16: accept the best (w*, n*) this round -----
-        w = list(best_this_round.w)
-        n = list(best_this_round.n)
-
-        # track best overall
-        if (best is None) or (best_this_round.obj_value < best.obj_value):
-            best = HALDAResult(
-                w=w,
-                n=n,
-                k=best_this_round.k,
-                obj_value=best_this_round.obj_value,
-                sets={k: list(v) for k, v in sets.items()},
-                iterations=outer,
-                forced_M4=list(forced_M4),
+            print("k: " + str(kf))
+            res = solve_fixed_k_ilp(
+                devs,
+                model,
+                sets,
+                kf,
+                time_limit=3600,
+                mip_gap=mip_gap,
             )
+            per_k_objs.append((kf, res.obj_value))
+            print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
+            if (best_this_round is None) or (
+                res.obj_value < best_this_round.obj_value
+            ):
+                best_this_round = res
+        except RuntimeError:
+            per_k_objs.append((kf, None))
+            print(f"  k={kf:<4d}  obj=infeasible")
+    if best_this_round is None:
+        raise RuntimeError("No feasible ILP found for any k this round.")
 
-    # Finalize
-    if best is None:
-        # fallback (should not happen if feasible): report current state
+    # ----- line 16: accept the best (w*, n*) this round -----
+    w = list(best_this_round.w)
+    n = list(best_this_round.n)
+
+    # track best overall
+    if (best is None) or (best_this_round.obj_value < best.obj_value):
         best = HALDAResult(
             w=w,
             n=n,
-            k=(model.L // max(1, sum(w))),
-            obj_value=float("nan"),
-            sets=prev_sets if prev_sets else {"M1": [], "M2": [], "M3": [], "M4": []},
-            iterations=0,
-            forced_M4=list(forced_M4),
-        )
+            k=best_this_round.k,
+            obj_value=best_this_round.obj_value,
+            sets={k: list(v) for k, v in sets.items()})
+
+
+    # # Finalize
+    # if best is None:
+    #     # fallback (should not happen if feasible): report current state
+    #     best = HALDAResult(
+    #         w=w,
+    #         n=n,
+    #         k=(model.L // max(1, sum(w))),
+    #         obj_value=float("nan"),
+    #         sets=prev_sets if prev_sets else {"M1": [], "M2": [], "M3": [], "M4": []},
+
+        # )
     return best
