@@ -73,7 +73,7 @@ def print_solution(result, devices: List[DeviceProfile]) -> None:
 
     print(f"\nOptimal k: {result.k}")
     print(f"Objective value: {result.obj_value:.6f}")
-    print(f"Iterations: {result.iterations}")
+    #print(f"Iterations: {result.iterations}")
 
     print("\nLayer distribution (w):")
     total_layers = sum(result.w)
@@ -89,15 +89,15 @@ def print_solution(result, devices: List[DeviceProfile]) -> None:
             print(f"  {dev.name:40s}: CPU only")
 
     print("\nDevice sets:")
-    for set_name in ["M1", "M2", "M3", "M4"]:
+    for set_name in ["M1", "M2", "M3"]:
         if result.sets[set_name]:
             device_names = [devices[i].name for i in result.sets[set_name]]
             print(f"  {set_name}: {', '.join(device_names)}")
 
-    if result.forced_M4:
-        print("\nDevices forced to M4 during calibration:")
-        for idx in result.forced_M4:
-            print(f"  - {devices[idx].name}")
+    #if result.forced_M4:
+    #    print("\nDevices forced to M4 during calibration:")
+    #    for idx in result.forced_M4:
+    #        print(f"  - {devices[idx].name}")
 
 
 def main():
@@ -225,7 +225,7 @@ Examples:
             solution_data = {
                 "k": result.k,
                 "objective_value": result.obj_value,
-                "iterations": result.iterations,
+                #"iterations": result.iterations,
                 "layer_distribution": {
                     dev.name: {"w": wi, "n": ni}
                     for dev, wi, ni in zip(devices, result.w, result.n)
@@ -234,7 +234,7 @@ Examples:
                     set_name: [devices[i].name for i in indices]
                     for set_name, indices in result.sets.items()
                 },
-                "forced_M4": [devices[i].name for i in result.forced_M4],
+                #"forced_M4": [devices[i].name for i in result.forced_M4],
             }
 
             with open(args.save_solution, "w") as f:
