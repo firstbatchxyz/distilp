@@ -1,0 +1,36 @@
+{
+    "name": "Omers-Mac-mini.local",
+    "os_type": "mac_metal",
+    "is_head": true,
+    "is_unified_mem": true,
+    "has_cuda": false,
+    "has_metal": true,
+    "scpu": {
+        "f64": 713914116855.8107,
+        "f32": 3117565630510.025,
+        "fp16": 3433227270840.0825,
+        "bf16": 3432313616859.291
+    },
+    "T_cpu": 58021933017.10391,
+    "t_kvcpy_cpu": 3.270561982349207e-8,
+    "t_kvcpy_gpu": 3.270561982349207e-8,
+    "t_ram2vram": 0,
+    "t_vram2ram": 0,
+    "t_comm": 0,
+    "s_disk": 514464287.2481789,
+    "d_avail_ram": 9678389248,
+    "sgpu_cuda": null,
+    "sgpu_metal": {
+        "f32": 6639529531320.356,
+        "fp16": 7600125822615.804,
+        "bf16": 7589689160963.167
+    },
+    "T_cuda": null,
+    "T_metal": 105849291047.34953,
+    "d_avail_cuda": null,
+    "d_avail_metal": 9678389248,
+    "c_cpu": 0,
+    "c_gpu": 0,
+    "d_bytes_can_swap": 0,
+    "d_swap_avail": 0
+}

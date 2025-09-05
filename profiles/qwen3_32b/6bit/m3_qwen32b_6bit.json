@@ -1,0 +1,36 @@
+{
+    "name": "erhans-macbook-air-2.tailc40f44.ts.net",
+    "os_type": "mac_metal",
+    "is_head": true,
+    "is_unified_mem": true,
+    "has_cuda": false,
+    "has_metal": true,
+    "scpu": {
+        "f64": 265372723750.51285,
+        "f32": 993675429973.108,
+        "fp16": 1016472712296.8773,
+        "bf16": 1016308215953.2141
+    },
+    "T_cpu": 31677926687.647808,
+    "t_kvcpy_cpu": 5.7165026740024765e-8,
+    "t_kvcpy_gpu": 5.7165026740024765e-8,
+    "t_ram2vram": 0,
+    "t_vram2ram": 0,
+    "t_comm": 0,
+    "s_disk": 7521231.3204625,
+    "d_avail_ram": 3244818432,
+    "sgpu_cuda": null,
+    "sgpu_metal": {
+        "f32": 841163593125.5948,
+        "fp16": 1450385396448.7666,
+        "bf16": 1462348841310.3625
+    },
+    "T_cuda": null,
+    "T_metal": 53261222465.24814,
+    "d_avail_cuda": null,
+    "d_avail_metal": 3244818432,
+    "c_cpu": 0,
+    "c_gpu": 0,
+    "d_bytes_can_swap": 5368709120,
+    "d_swap_avail": 1081212928
+}

@@ -16,6 +16,7 @@ sys.path.append(str(Path(__file__).parent / "components"))
 from components.gurobi_loader import (
     load_devices_and_model,
     load_from_combined_json,
+    load_from_profile_folder,
     load_device_profile,
     load_model_profile,
 )
@@ -73,7 +74,7 @@ def print_solution(result, devices: List[DeviceProfile]) -> None:
 
     print(f"\nOptimal k: {result.k}")
     print(f"Objective value: {result.obj_value:.6f}")
-    #print(f"Iterations: {result.iterations}")
+    # print(f"Iterations: {result.iterations}")
 
     print("\nLayer distribution (w):")
     total_layers = sum(result.w)
@@ -94,7 +95,7 @@ def print_solution(result, devices: List[DeviceProfile]) -> None:
             device_names = [devices[i].name for i in result.sets[set_name]]
             print(f"  {set_name}: {', '.join(device_names)}")
 
-    #if result.forced_M4:
+    # if result.forced_M4:
     #    print("\nDevices forced to M4 during calibration:")
     #    for idx in result.forced_M4:
     #        print(f"  - {devices[idx].name}")
@@ -106,16 +107,16 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Run with a profile folder
+  python main.py --profile hermes_70b
+  python main.py --profile profiles/qwen3_32b/8bit
+
   # Run with separate device and model files
   python main.py --devices profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m4.json \\
                  --model profiles/model_profile.json
 
-  # Run with a combined JSON file
-  python main.py --combined generated_devices.json
-
   # Run with custom solver parameters
-  python main.py --devices profiles/*.json --model profiles/model_profile.json \\
-                 --time-limit 10 --max-iters 20 --mip-gap 0.001
+  python main.py --profile hermes_70b --time-limit 10 --max-iters 20 --mip-gap 0.001
         """,
     )
 
@@ -125,7 +126,8 @@ Examples:
         "--devices", nargs="+", help="Device profile JSON files (requires --model)"
     )
     input_group.add_argument(
-        "--combined", help="Combined JSON file with devices and model"
+        "--profile",
+        help="Profile folder path (e.g., 'hermes_70b' or 'profiles/hermes_70b')",
     )
 
     parser.add_argument(
@@ -178,12 +180,13 @@ Examples:
         parser.error("--devices requires --model")
 
     try:
-        # Load profiles
-        if args.combined:
-            devices, model = load_from_combined_json(args.combined)
+        if args.profile:
+            # Load from profile folder
+            devices, model = load_from_profile_folder(args.profile)
             if not args.quiet:
-                print(f"Loaded from combined file: {args.combined}")
+                print(f"Loaded profile from: {args.profile}")
         else:
+            # Load from separate files
             devices, model = load_devices_and_model(args.devices, args.model)
             if not args.quiet:
                 print(f"Loaded {len(args.devices)} device file(s) and model")
@@ -225,7 +228,7 @@ Examples:
             solution_data = {
                 "k": result.k,
                 "objective_value": result.obj_value,
-                #"iterations": result.iterations,
+                # "iterations": result.iterations,
                 "layer_distribution": {
                     dev.name: {"w": wi, "n": ni}
                     for dev, wi, ni in zip(devices, result.w, result.n)
@@ -234,7 +237,7 @@ Examples:
                     set_name: [devices[i].name for i in indices]
                     for set_name, indices in result.sets.items()
                 },
-                #"forced_M4": [devices[i].name for i in result.forced_M4],
+                # "forced_M4": [devices[i].name for i in result.forced_M4],
             }
 
             with open(args.save_solution, "w") as f:

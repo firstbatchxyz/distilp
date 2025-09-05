@@ -20,6 +20,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
+from components.plotter import plot_k_curve
 
 # --------------------------------------
 # Utility: divisors used as k candidates
@@ -154,7 +155,6 @@ def classify_device_case(
 
 def assign_sets(
     devs: List[DeviceProfile],
-
 ) -> Dict[str, List[int]]:
     """
     Partition devices into M1..M4 by the most recent (w, n, k).  [Algorithm 1, line 6]
@@ -307,7 +307,7 @@ def solve_fixed_k_ilp(
     m.Params.OutputFlag = 0
 
     # Decision variables
-    w = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="w")
+    w = m.addVars(M, lb=1, vtype=GRB.INTEGER, name="w")
     n = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="n")
     y = m.addVars(M, vtype=GRB.BINARY, name="y")
 
@@ -332,14 +332,14 @@ def solve_fixed_k_ilp(
     for i in sets["M1"]:
         rhs = devs[i].d_avail_ram - bcio(i) + y[i] * disk_size
         # print("M1 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr(w[i] * k * bprime <= rhs, name=f"M1_lb[{i}]")
+        m.addConstr(w[i] * bprime <= rhs, name=f"M1_lb[{i}]")
 
     # Case 2 (M2): macOS with Metal, must overload:                 [Eq. (29)]
     for i in sets["M2"]:
         dav_metal = float(devs[i].d_avail_metal or 0)
         rhs = dav_metal - bcio(i) - devs[i].c_gpu + y[i] * disk_size
         # print("M2 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr(w[i] * k * bprime <= rhs, name=f"M2_lb[{i}]")
+        m.addConstr(w[i] * bprime <= rhs, name=f"M2_lb[{i}]")
 
     # Case 3 (M3): Linux/Android, must overload on CPU share:       [Eq. (30)]
     for i in sets["M3"]:
@@ -347,7 +347,7 @@ def solve_fixed_k_ilp(
         dswap = min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
         rhs = d.d_avail_ram + dswap - bcio(i) + y[i] * disk_size
         # print("M3 rhs: " + str(rhs) + "and Lb: " + str(Lb))
-        m.addConstr((w[i] - n[i]) * k * bprime <= rhs, name=f"M3_lb[{i}]")
+        m.addConstr((w[i] - n[i]) * bprime <= rhs, name=f"M3_lb[{i}]")
 
     # --- VRAM / shared memory bounds (Metal)                        [Eqs. (35)-(36)] ---
     for i in range(M):
@@ -453,9 +453,7 @@ def halda_solve(
     # _print_sets(sets, devs)
 
     best_this_round: Optional[ILPResult] = None
-    per_k_objs: List[Tuple[int, Optional[float]]] = (
-        []
-    )  # (k, obj or None if infeasible)
+    per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
     print("Objectives by k")
     for kf in Ks:
         try:
@@ -471,9 +469,7 @@ def halda_solve(
             )
             per_k_objs.append((kf, res.obj_value))
             print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
-            if (best_this_round is None) or (
-                res.obj_value < best_this_round.obj_value
-            ):
+            if (best_this_round is None) or (res.obj_value < best_this_round.obj_value):
                 best_this_round = res
         except RuntimeError:
             per_k_objs.append((kf, None))
@@ -492,18 +488,13 @@ def halda_solve(
             n=n,
             k=best_this_round.k,
             obj_value=best_this_round.obj_value,
-            sets={k: list(v) for k, v in sets.items()})
+            sets={k: list(v) for k, v in sets.items()},
+        )
 
-
-    # # Finalize
-    # if best is None:
-    #     # fallback (should not happen if feasible): report current state
-    #     best = HALDAResult(
-    #         w=w,
-    #         n=n,
-    #         k=(model.L // max(1, sum(w))),
-    #         obj_value=float("nan"),
-    #         sets=prev_sets if prev_sets else {"M1": [], "M2": [], "M3": [], "M4": []},
-
-        # )
+    plot_k_curve(
+        per_k_objs,
+        k_star=(best.k if best is not None else None),
+        title="HALDA: k vs objective (final sweep)",
+        # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+    )
     return best

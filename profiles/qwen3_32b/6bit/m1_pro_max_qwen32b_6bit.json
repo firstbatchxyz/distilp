@@ -1,0 +1,36 @@
+{
+    "name": "Omers-MacBook-Pro-1278.local",
+    "os_type": "mac_metal",
+    "is_head": true,
+    "is_unified_mem": true,
+    "has_cuda": false,
+    "has_metal": true,
+    "scpu": {
+        "f64": 645873726591.375,
+        "f32": 2067177954217.506,
+        "fp16": 1537409062139.087,
+        "bf16": 763155749921.1208
+    },
+    "T_cpu": 30018538077.409096,
+    "t_kvcpy_cpu": 5.267401695374652e-8,
+    "t_kvcpy_gpu": 5.267401695374652e-8,
+    "t_ram2vram": 0,
+    "t_vram2ram": 0,
+    "t_comm": 0,
+    "s_disk": 514411315.6840683,
+    "d_avail_ram": 12759007232,
+    "sgpu_cuda": null,
+    "sgpu_metal": {
+        "f32": 5523690053472.727,
+        "fp16": 4458039417408.736,
+        "bf16": 4274466986817.444
+    },
+    "T_cuda": null,
+    "T_metal": 60106531935.85424,
+    "d_avail_cuda": null,
+    "d_avail_metal": 12759007232,
+    "c_cpu": 0,
+    "c_gpu": 0,
+    "d_bytes_can_swap": 2147483648,
+    "d_swap_avail": 1135542272
+}

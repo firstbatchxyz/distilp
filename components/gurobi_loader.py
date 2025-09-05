@@ -182,6 +182,63 @@ def load_devices_and_model(
     return devices, model
 
 
+def load_from_profile_folder(
+    profile_path: str,
+) -> Tuple[List[DeviceProfile], ModelProfile]:
+    """
+    Load devices and model from a profile folder.
+
+    The folder should contain:
+    - model_profile.json: The model profile
+    - Any other .json files: Device profiles
+
+    Args:
+        profile_path: Path to the profile folder (e.g., "profiles/hermes_70b")
+
+    Returns:
+        Tuple of (devices list, model profile)
+    """
+    import os
+    from pathlib import Path
+
+    profile_dir = Path(profile_path)
+    if not profile_dir.exists():
+        # Try with 'profiles' prefix if not found
+        profile_dir = Path("profiles") / profile_path
+        if not profile_dir.exists():
+            raise FileNotFoundError(f"Profile folder not found: {profile_path}")
+
+    # Find model profile
+    model_file = profile_dir / "model_profile.json"
+    if not model_file.exists():
+        raise FileNotFoundError(f"model_profile.json not found in {profile_dir}")
+
+    # Load model
+    model = load_model_profile(str(model_file))
+
+    # Find and load all device profiles (any .json file except model_profile.json)
+    device_files = [
+        f for f in profile_dir.glob("*.json") if f.name != "model_profile.json"
+    ]
+
+    if not device_files:
+        raise ValueError(f"No device profiles found in {profile_dir}")
+
+    # Sort device files for consistent ordering
+    device_files.sort()
+
+    # Load devices
+    devices = []
+    for i, device_file in enumerate(device_files):
+        device = load_device_profile(str(device_file))
+        # Ensure first device is marked as head if not already set
+        if i == 0 and not any(d.is_head for d in devices):
+            device.is_head = True
+        devices.append(device)
+
+    return devices, model
+
+
 def load_from_combined_json(
     combined_file: str,
 ) -> Tuple[List[DeviceProfile], ModelProfile]:
