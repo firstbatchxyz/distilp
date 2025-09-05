@@ -1,5 +1,5 @@
 """
-baska bir sey
+deneme
 """
 
 from __future__ import annotations
