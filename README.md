@@ -10,14 +10,8 @@ Then
 git clone https://github.com/firstbatchxyz/dsolver.git
 cd dsolver
 uv sync
-uv run python main.py --devices profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m4.json profiles/device_profile_mac_m4.json profiles/device_profile_mac_m4.json --model profiles/model_profile_qwen3_4b_8bit.json
-
-
-uv run python main.py --devices profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m4.json --model profiles/model_profile_qwen3_32b_8bit.json
-
-
-
-uv run python main.py --devices profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m1_max.json profiles/device_profile_mac_m4.json profiles/device_profile_mac_m4.json profiles/device_profile_mac_m4.json --model profiles/model_profile_qwen3_32b_fp16.json
+uv run python main.py --profile qwen3_32b/6bit --verbose
+uv run python main.py --profile hermes_70b --verbose
 ```
 
 
