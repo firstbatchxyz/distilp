@@ -1,14 +1,5 @@
 """
-HALDA end-to-end (parameters + Algorithm 1 with Gurobi), using the same notation as the paper.
-
-References to the paper (prima.cpp / Halda):
-- LDA definition: Eqs. (1)-(5)                           [Sec. 3.2]
-- Fixed-k ILP:    Eqs. (6)-(10)                          [Sec. 3.3]
-- Vectorized a,b,c and selector matrices Pw, Pn          [App. A.3]
-- RAM/VRAM bounds (z, z_gpu) and P^gpu_n                 [App. A.3]
-- Case constraints (M1..M4) and GPU bounds: (28)-(37)    [App. A.3]
-- Coefficients b', α_m, β_m, ξ_m and constants (Eq. 21)  [App. A.3]
-- Algorithm 1 (HALDA), lines 1-17                        [Sec. 3.3]
+deneme
 """
 
 from __future__ import annotations
