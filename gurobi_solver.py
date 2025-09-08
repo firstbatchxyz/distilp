@@ -296,7 +296,7 @@ def solve_fixed_k_ilp(
     bprime = b_prime(model)
     Lb = model.L * bprime
     disk_size = 2000000000000
-    disk_speed_threshold = 1514464287       # added 1 at the beginning of the number from M4, THIS HAS TO BE CHANGED
+    disk_speed_threshold = 51446428       # removed one digit from the end (s_disk of M4), THIS HAS TO BE CHANGED
     # Coefficients [App. A.3]
     a, b, c = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
