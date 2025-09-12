@@ -22,6 +22,7 @@ from gurobipy import GRB
 from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
 from components.plotter import plot_k_curve
 
+
 # --------------------------------------
 # Utility: divisors used as k candidates
 # --------------------------------------
@@ -113,6 +114,7 @@ def alpha_beta_xi(
         beta = 0.0
 
     # ξ_m (traffic + comm)
+    # dev.t_ram2vram + dev.t_vram2ram is done once per round as it is done for sequence of layers within a window.
     xi = (dev.t_ram2vram + dev.t_vram2ram) * (
         0 if dev.is_unified_mem else 1
     ) + dev.t_comm
@@ -288,12 +290,12 @@ def solve_fixed_k_ilp(
            n_m = 0 if no GPU                     [Eq. (37)]
     """
     M = len(devs)
-    print(M)
     # print(M)
     W = model.L // k
     bprime = b_prime(model)
     Lb = model.L * bprime
     disk_size = 2000000000000
+    disk_speed_threshold = 51446428  # removed one digit from the end (s_disk of M4), THIS HAS TO BE CHANGED
     # Coefficients [App. A.3]
     a, b, c = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
@@ -307,7 +309,10 @@ def solve_fixed_k_ilp(
     m.Params.OutputFlag = 0
 
     # Decision variables
-    w = m.addVars(M, lb=1, vtype=GRB.INTEGER, name="w")
+    # w = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="w")     # lb=0, not every device has to be chosen
+    w = m.addVars(
+        M, lb=1, vtype=GRB.INTEGER, name="w"
+    )  # lb=1, every device has to be chosen
     n = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="n")
     y = m.addVars(M, vtype=GRB.BINARY, name="y")
 
@@ -354,13 +359,13 @@ def solve_fixed_k_ilp(
         d = devs[i]
         # CUDA VRAM bound
         if d.has_cuda and d.d_avail_cuda is not None:
-            rhs = W * (d.d_avail_cuda - d.c_gpu)
-            m.addConstr(n[i] * Lb <= rhs, name=f"cuda_vram[{i}]")
+            rhs = d.d_avail_cuda - d.c_gpu
+            m.addConstr(n[i] <= rhs, name=f"cuda_vram[{i}]")
         # Metal shared-memory bound (subtract b_o on head)          [Eq. (36)]
         if d.has_metal and d.d_avail_metal is not None:
             head = 1.0 if d.is_head else 0.0
-            rhs = W * (d.d_avail_metal - d.c_gpu - model.b_out * head)
-            m.addConstr(n[i] * Lb <= rhs, name=f"metal_shared[{i}]")
+            rhs = d.d_avail_metal - d.c_gpu - model.b_out * head
+            m.addConstr(n[i] <= rhs, name=f"metal_shared[{i}]")
 
     # Objective: min k*(a^T w + b^T n + e^T c) + κ                  [Eq. (6)]
     obj_affine = k * (
@@ -368,7 +373,8 @@ def solve_fixed_k_ilp(
         + gp.quicksum(float(b[i]) * n[i] for i in range(M))
     )
     for i, d in enumerate(devs):
-
+        if d.s_disk < disk_speed_threshold:
+            m.addConstr(y[i] == 0, name=f"slow_disk[{i}]")
         if i in sets["M1"]:
             obj_affine += ((bprime / d.s_disk) * y[i] * w[i]) * k
         elif i in sets["M2"]:
@@ -384,6 +390,7 @@ def solve_fixed_k_ilp(
     )  # add constants so cross-k is comparable
 
     m.optimize()
+    # m.write("model.lp")
     if m.status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
         # m.write("model.lp")
         # input("Paused. Press Enter to continue...")
@@ -436,6 +443,7 @@ def halda_solve(
     mip_gap: Optional[float] = 1e-4,
     # strict_eps_bytes: float = 1.0,
     max_outer_iters: int = 50,
+    plot: bool = True,
 ) -> HALDAResult:
     """
     Full Algorithm 1 (HALDA), lines 1-17.  [Sec. 3.3]
@@ -491,10 +499,11 @@ def halda_solve(
             sets={k: list(v) for k, v in sets.items()},
         )
 
-    plot_k_curve(
-        per_k_objs,
-        k_star=(best.k if best is not None else None),
-        title="HALDA: k vs objective (final sweep)",
-        # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
-    )
+    if plot:
+        plot_k_curve(
+            per_k_objs,
+            k_star=(best.k if best is not None else None),
+            title="HALDA: k vs objective (final sweep)",
+            # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+        )
     return best
