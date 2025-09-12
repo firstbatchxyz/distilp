@@ -4,3 +4,7 @@ __pycache__/
 .python-version
 *.pyc
 .idea/
+
+build
+*.egg-info
+.DS_Store

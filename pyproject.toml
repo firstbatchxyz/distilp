@@ -1,8 +1,7 @@
 [project]
 name = "dsolver"
 version = "0.1.0"
-description = "Add your description here"
-readme = "README.md"
+description = "HALDA Solver - Distributed LLM Inference Optimization Library"
 requires-python = ">=3.12"
 dependencies = [
     "gurobipy>=12.0.3",
@@ -10,3 +9,5 @@ dependencies = [
     "numpy>=2.3.2",
     "scipy>=1.16.1",
 ]
+[tool.setuptools.packages.find]
+include = ["components*", "profiles*"]

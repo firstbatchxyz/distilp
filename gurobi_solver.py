@@ -86,7 +86,7 @@ def _pick_T_gpu(dev: DeviceProfile) -> Optional[float]:
 
 
 def alpha_beta_xi(
-        dev: DeviceProfile, model: ModelProfile
+    dev: DeviceProfile, model: ModelProfile
 ) -> Tuple[float, float, float]:
     """
     α_m, β_m, ξ_m exactly as defined under Assumption 1.  [App. A.3, Eq. 21 block]
@@ -106,9 +106,9 @@ def alpha_beta_xi(
     if S_gpu is not None and T_gpu is not None:
         comp_gpu_minus_cpu = _sum_f_over_S(model.f_by_quant, S_gpu, model.Q) - comp_cpu
         beta = (
-                comp_gpu_minus_cpu
-                + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
-                + (bprime / T_gpu - bprime / dev.T_cpu)
+            comp_gpu_minus_cpu
+            + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
+            + (bprime / T_gpu - bprime / dev.T_cpu)
         )
     else:
         beta = 0.0
@@ -116,7 +116,6 @@ def alpha_beta_xi(
     # ξ_m (traffic + comm)
     # dev.t_ram2vram + dev.t_vram2ram is done once per round as it is done for sequence of layers within a window.
     xi = (dev.t_ram2vram + dev.t_vram2ram) * (
-
         0 if dev.is_unified_mem else 1
     ) + dev.t_comm
     return alpha, beta, xi
@@ -137,7 +136,7 @@ def _b_cio(dev: DeviceProfile, model: ModelProfile) -> float:
 
 
 def classify_device_case(
-        dev: DeviceProfile,
+    dev: DeviceProfile,
 ) -> int:
     """
     Decide Case 1..4 for device m given tentative (w_m, n_m, k),
@@ -157,7 +156,7 @@ def classify_device_case(
 
 
 def assign_sets(
-        devs: List[DeviceProfile],
+    devs: List[DeviceProfile],
 ) -> Dict[str, List[int]]:
     """
     Partition devices into M1..M4 by the most recent (w, n, k).  [Algorithm 1, line 6]
@@ -183,9 +182,9 @@ def assign_sets(
 
 
 def objective_vectors(
-        devs: List[DeviceProfile],
-        model: ModelProfile,
-        sets: Dict[str, List[int]],
+    devs: List[DeviceProfile],
+    model: ModelProfile,
+    sets: Dict[str, List[int]],
 ) -> Tuple[List[float], List[float], List[float]]:
     """
     Build a, b, c as in the vectorized form (block right after ILFP).  [App. A.3]
@@ -230,7 +229,7 @@ def objective_vectors(
 
 
 def kappa_constant(
-        devs: List[DeviceProfile], model: ModelProfile, sets: Dict[str, List[int]]
+    devs: List[DeviceProfile], model: ModelProfile, sets: Dict[str, List[int]]
 ) -> float:
     """
     κ aggregates the constant parts in Eq. (21) that do not multiply l_m, n_m, or W_m.  [App. A.3]
@@ -274,12 +273,12 @@ class ILPResult:
 
 
 def solve_fixed_k_ilp(
-        devs: List[DeviceProfile],
-        model: ModelProfile,
-        sets: Dict[str, List[int]],
-        k: int,
-        time_limit: Optional[float] = None,
-        mip_gap: Optional[float] = 1e-4,
+    devs: List[DeviceProfile],
+    model: ModelProfile,
+    sets: Dict[str, List[int]],
+    k: int,
+    time_limit: Optional[float] = None,
+    mip_gap: Optional[float] = 1e-4,
 ) -> ILPResult:
     """
     Build and solve the fixed-k ILP:
@@ -296,7 +295,7 @@ def solve_fixed_k_ilp(
     bprime = b_prime(model)
     Lb = model.L * bprime
     disk_size = 2000000000000
-    disk_speed_threshold = 51446428       # removed one digit from the end (s_disk of M4), THIS HAS TO BE CHANGED
+    disk_speed_threshold = 51446428  # removed one digit from the end (s_disk of M4), THIS HAS TO BE CHANGED
     # Coefficients [App. A.3]
     a, b, c = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
@@ -311,7 +310,9 @@ def solve_fixed_k_ilp(
 
     # Decision variables
     # w = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="w")     # lb=0, not every device has to be chosen
-    w = m.addVars(M, lb=1, vtype=GRB.INTEGER, name="w")  # lb=1, every device has to be chosen
+    w = m.addVars(
+        M, lb=1, vtype=GRB.INTEGER, name="w"
+    )  # lb=1, every device has to be chosen
     n = m.addVars(M, lb=0, vtype=GRB.INTEGER, name="n")
     y = m.addVars(M, vtype=GRB.BINARY, name="y")
 
@@ -368,8 +369,8 @@ def solve_fixed_k_ilp(
 
     # Objective: min k*(a^T w + b^T n + e^T c) + κ                  [Eq. (6)]
     obj_affine = k * (
-            gp.quicksum(float(a[i]) * w[i] for i in range(M))
-            + gp.quicksum(float(b[i]) * n[i] for i in range(M))
+        gp.quicksum(float(a[i]) * w[i] for i in range(M))
+        + gp.quicksum(float(b[i]) * n[i] for i in range(M))
     )
     for i, d in enumerate(devs):
         if d.s_disk < disk_speed_threshold:
@@ -385,7 +386,7 @@ def solve_fixed_k_ilp(
 
     m.setObjective(obj_affine, GRB.MINIMIZE)
     m.ObjCon = (
-            k * sum(float(x) for x in c) + kappa
+        k * sum(float(x) for x in c) + kappa
     )  # add constants so cross-k is comparable
 
     m.optimize()
@@ -420,7 +421,7 @@ class HALDAResult:
 
 
 def _print_sets(
-        label: str, sets: Dict[str, List[int]], devs: List[DeviceProfile]
+    label: str, sets: Dict[str, List[int]], devs: List[DeviceProfile]
 ) -> None:
     """Pretty-print M1..M4 with device names."""
 
@@ -434,14 +435,15 @@ def _print_sets(
 
 
 def halda_solve(
-        devs: List[DeviceProfile],
-        model: ModelProfile,
-        sdisk_threshold: Optional[float] = None,
-        k_candidates: Optional[Iterable[int]] = None,
-        time_limit_per_k: Optional[float] = None,
-        mip_gap: Optional[float] = 1e-4,
-        # strict_eps_bytes: float = 1.0,
-        max_outer_iters: int = 50,
+    devs: List[DeviceProfile],
+    model: ModelProfile,
+    sdisk_threshold: Optional[float] = None,
+    k_candidates: Optional[Iterable[int]] = None,
+    time_limit_per_k: Optional[float] = None,
+    mip_gap: Optional[float] = 1e-4,
+    # strict_eps_bytes: float = 1.0,
+    max_outer_iters: int = 50,
+    plot: bool = True,
 ) -> HALDAResult:
     """
     Full Algorithm 1 (HALDA), lines 1-17.  [Sec. 3.3]
@@ -497,10 +499,11 @@ def halda_solve(
             sets={k: list(v) for k, v in sets.items()},
         )
 
-    plot_k_curve(
-        per_k_objs,
-        k_star=(best.k if best is not None else None),
-        title="HALDA: k vs objective (final sweep)",
-        # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
-    )
+    if plot:
+        plot_k_curve(
+            per_k_objs,
+            k_star=(best.k if best is not None else None),
+            title="HALDA: k vs objective (final sweep)",
+            # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+        )
     return best

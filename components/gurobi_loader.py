@@ -11,7 +11,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
 from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
 from gurobi_solver import halda_solve
@@ -362,6 +362,60 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         d_bytes_can_swap=data.get("d_bytes_can_swap", 0),
         d_swap_avail=data.get("d_swap_avail", 0),
     )
+
+
+def load_device(device_source: Union[str, Dict[str, Any]]) -> DeviceProfile:
+    """
+    Load a device profile from either a JSON file path or a dictionary/JSON string.
+
+    Args:
+        device_source: Either a file path to a JSON file, a JSON string, or a dictionary
+
+    Returns:
+        DeviceProfile object
+    """
+    if isinstance(device_source, dict):
+        # Already a dictionary
+        return load_device_profile_from_dict(device_source)
+    elif isinstance(device_source, str):
+        # Check if it's a file path or JSON string
+        device_source = device_source.strip()
+        if device_source.startswith("{"):
+            # It's a JSON string
+            data = json.loads(device_source)
+            return load_device_profile_from_dict(data)
+        else:
+            # It's a file path
+            return load_device_profile(device_source)
+    else:
+        raise ValueError(f"Invalid device source type: {type(device_source)}")
+
+
+def load_model(model_source: Union[str, Dict[str, Any]]) -> ModelProfile:
+    """
+    Load a model profile from either a JSON file path or a dictionary/JSON string.
+
+    Args:
+        model_source: Either a file path to a JSON file, a JSON string, or a dictionary
+
+    Returns:
+        ModelProfile object
+    """
+    if isinstance(model_source, dict):
+        # Already a dictionary
+        return load_model_profile_from_dict(model_source)
+    elif isinstance(model_source, str):
+        # Check if it's a file path or JSON string
+        model_source = model_source.strip()
+        if model_source.startswith("{"):
+            # It's a JSON string
+            data = json.loads(model_source)
+            return load_model_profile_from_dict(data)
+        else:
+            # It's a file path
+            return load_model_profile(model_source)
+    else:
+        raise ValueError(f"Invalid model source type: {type(model_source)}")
 
 
 def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:

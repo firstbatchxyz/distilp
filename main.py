@@ -172,6 +172,11 @@ Examples:
         help="Verbose output including device and model summaries",
     )
     output_group.add_argument("--save-solution", help="Save solution to JSON file")
+    output_group.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Disable plotting of k vs objective curve",
+    )
 
     args = parser.parse_args()
 
@@ -212,6 +217,7 @@ Examples:
             time_limit_per_k=args.time_limit,
             mip_gap=args.mip_gap,
             max_outer_iters=args.max_iters,
+            plot=not args.no_plot,
         )
 
         # Print solution
