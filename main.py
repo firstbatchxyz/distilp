@@ -13,15 +13,15 @@ from typing import List, Optional
 # Add components to path
 sys.path.append(str(Path(__file__).parent / "components"))
 
-from components.gurobi_loader import (
+from .components.gurobi_loader import (
     load_devices_and_model,
     load_from_combined_json,
     load_from_profile_folder,
     load_device_profile,
     load_model_profile,
 )
-from components.dataclasses import DeviceProfile, ModelProfile
-from gurobi_solver import halda_solve
+from .components.dataclasses import DeviceProfile, ModelProfile
+from .gurobi_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:

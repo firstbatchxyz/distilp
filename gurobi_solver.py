@@ -19,8 +19,8 @@ import math
 import gurobipy as gp
 from gurobipy import GRB
 
-from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-from components.plotter import plot_k_curve
+from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
+from .components.plotter import plot_k_curve
 
 
 # --------------------------------------
