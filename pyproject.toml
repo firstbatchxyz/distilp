@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "dsolver"
 version = "0.1.0"
@@ -10,5 +14,6 @@ dependencies = [
   "scipy>=1.16.1",
 ]
 
-[tool.setuptools.packages.find]
-include = ["components*", "profiles*"]
+[tool.hatch.build.targets.wheel]
+packages = ["."]
+sources = {"." = "dsolver"}

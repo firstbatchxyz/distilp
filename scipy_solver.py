@@ -10,7 +10,7 @@ import math
 import numpy as np
 from scipy.optimize import milp, LinearConstraint, Bounds
 
-from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
+from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
 
 
 # -----------------------------

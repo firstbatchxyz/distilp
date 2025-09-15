@@ -13,8 +13,8 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from typing import Dict, List, Any, Optional, Tuple, Union
 from dataclasses import dataclass
-from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-from gurobi_solver import halda_solve
+from .dataclasses import DeviceProfile, ModelProfile, QuantPerf
+from ..gurobi_solver import halda_solve
 
 
 def load_device_profile(device_path: str) -> DeviceProfile:
