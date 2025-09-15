@@ -29,41 +29,168 @@ def load_device_profile(device_path: str) -> DeviceProfile:
     scpu = {}
     if "scpu" in data and data["scpu"]:
         cpu_data = data["scpu"]
-        # Map to quantization types used by gurobi solver
+
+        # Extract batch size dictionaries for each precision
+        f32_data = cpu_data.get("f32", {})
+        fp16_data = cpu_data.get("fp16", {})
+        bf16_data = cpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes from any precision that has them
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
+        # Build quantization performance dict with batch sizes
         scpu = {
-            "Q4_K": cpu_data.get("f32", 0) * 0.25,  # Q4_K typically ~25% of f32 FLOPS
-            "Q5_K": cpu_data.get("f32", 0) * 0.31,  # Q5_K typically ~31% of f32 FLOPS
-            "Q6_K": cpu_data.get("f32", 0) * 0.37,  # Q6_K typically ~37% of f32 FLOPS
-            "Q8_0": cpu_data.get("f32", 0) * 0.5,  # Q8_0 typically ~50% of f32 FLOPS
-            "F16": cpu_data.get("fp16", cpu_data.get("f32", 0) * 0.75),
-            "F32": cpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
+
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            # Map to quantization types used by gurobi solver
+            scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
+            scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
+            scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
+            scpu["Q8_0"][batch_key] = f32_val * 0.5   # Q8_0 typically ~50% of f32 FLOPS
+            scpu["F16"][batch_key] = fp16_val
+            scpu["BF16"][batch_key] = bf16_val
+            scpu["F32"][batch_key] = f32_val
 
     # Convert sgpu_metal format if present
     sgpu_metal = None
     if data.get("has_metal") and data.get("sgpu_metal"):
         gpu_data = data["sgpu_metal"]
+
+        # Extract batch size dictionaries for each precision
+        f32_data = gpu_data.get("f32", {})
+        fp16_data = gpu_data.get("fp16", {})
+        bf16_data = gpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
         sgpu_metal = {
-            "Q4_K": gpu_data.get("f32", 0) * 0.25,
-            "Q5_K": gpu_data.get("f32", 0) * 0.31,
-            "Q6_K": gpu_data.get("f32", 0) * 0.37,
-            "Q8_0": gpu_data.get("f32", 0) * 0.5,
-            "F16": gpu_data.get("fp16", gpu_data.get("f32", 0) * 0.75),
-            "F32": gpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
+
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            sgpu_metal["Q4_K"][batch_key] = f32_val * 0.25
+            sgpu_metal["Q5_K"][batch_key] = f32_val * 0.31
+            sgpu_metal["Q6_K"][batch_key] = f32_val * 0.37
+            sgpu_metal["Q8_0"][batch_key] = f32_val * 0.5
+            sgpu_metal["F16"][batch_key] = fp16_val
+            sgpu_metal["BF16"][batch_key] = bf16_val
+            sgpu_metal["F32"][batch_key] = f32_val
 
     # Convert sgpu_cuda format if present
     sgpu_cuda = None
     if data.get("has_cuda") and data.get("sgpu_cuda"):
         gpu_data = data["sgpu_cuda"]
+
+        # Extract batch size dictionaries for each precision
+        f32_data = gpu_data.get("f32", {})
+        fp16_data = gpu_data.get("fp16", {})
+        bf16_data = gpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
         sgpu_cuda = {
-            "Q4_K": gpu_data.get("f32", 0) * 0.25,
-            "Q5_K": gpu_data.get("f32", 0) * 0.31,
-            "Q6_K": gpu_data.get("f32", 0) * 0.37,
-            "Q8_0": gpu_data.get("f32", 0) * 0.5,
-            "F16": gpu_data.get("fp16", gpu_data.get("f32", 0) * 0.75),
-            "F32": gpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
+
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            sgpu_cuda["Q4_K"][batch_key] = f32_val * 0.25
+            sgpu_cuda["Q5_K"][batch_key] = f32_val * 0.31
+            sgpu_cuda["Q6_K"][batch_key] = f32_val * 0.37
+            sgpu_cuda["Q8_0"][batch_key] = f32_val * 0.5
+            sgpu_cuda["F16"][batch_key] = fp16_val
+            sgpu_cuda["BF16"][batch_key] = bf16_val
+            sgpu_cuda["F32"][batch_key] = f32_val
 
     # Create DeviceProfile with all fields from the new format
     return DeviceProfile(
@@ -297,43 +424,172 @@ def load_from_combined_json(
 def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
     """Load DeviceProfile from dictionary (similar to load_device_profile but from dict)."""
 
-    # Convert scpu format
+    # Convert scpu format - map from f32/fp16/bf16 to quantization types
     scpu = {}
     if "scpu" in data and data["scpu"]:
         cpu_data = data["scpu"]
+
+        # Extract batch size dictionaries for each precision
+        f32_data = cpu_data.get("f32", {})
+        fp16_data = cpu_data.get("fp16", {})
+        bf16_data = cpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes from any precision that has them
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
+        # Build quantization performance dict with batch sizes
         scpu = {
-            "Q4_K": cpu_data.get("f32", 0) * 0.25,
-            "Q5_K": cpu_data.get("f32", 0) * 0.31,
-            "Q6_K": cpu_data.get("f32", 0) * 0.37,
-            "Q8_0": cpu_data.get("f32", 0) * 0.5,
-            "F16": cpu_data.get("fp16", cpu_data.get("f32", 0) * 0.75),
-            "F32": cpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
 
-    # Convert GPU formats
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            # Map to quantization types used by gurobi solver
+            scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
+            scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
+            scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
+            scpu["Q8_0"][batch_key] = f32_val * 0.5   # Q8_0 typically ~50% of f32 FLOPS
+            scpu["F16"][batch_key] = fp16_val
+            scpu["BF16"][batch_key] = bf16_val
+            scpu["F32"][batch_key] = f32_val
+
+    # Convert sgpu_metal format if present
     sgpu_metal = None
     if data.get("has_metal") and data.get("sgpu_metal"):
         gpu_data = data["sgpu_metal"]
+
+        # Extract batch size dictionaries for each precision
+        f32_data = gpu_data.get("f32", {})
+        fp16_data = gpu_data.get("fp16", {})
+        bf16_data = gpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
         sgpu_metal = {
-            "Q4_K": gpu_data.get("f32", 0) * 0.25,
-            "Q5_K": gpu_data.get("f32", 0) * 0.31,
-            "Q6_K": gpu_data.get("f32", 0) * 0.37,
-            "Q8_0": gpu_data.get("f32", 0) * 0.5,
-            "F16": gpu_data.get("fp16", gpu_data.get("f32", 0) * 0.75),
-            "F32": gpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
 
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            sgpu_metal["Q4_K"][batch_key] = f32_val * 0.25
+            sgpu_metal["Q5_K"][batch_key] = f32_val * 0.31
+            sgpu_metal["Q6_K"][batch_key] = f32_val * 0.37
+            sgpu_metal["Q8_0"][batch_key] = f32_val * 0.5
+            sgpu_metal["F16"][batch_key] = fp16_val
+            sgpu_metal["BF16"][batch_key] = bf16_val
+            sgpu_metal["F32"][batch_key] = f32_val
+
+    # Convert sgpu_cuda format if present
     sgpu_cuda = None
     if data.get("has_cuda") and data.get("sgpu_cuda"):
         gpu_data = data["sgpu_cuda"]
+
+        # Extract batch size dictionaries for each precision
+        f32_data = gpu_data.get("f32", {})
+        fp16_data = gpu_data.get("fp16", {})
+        bf16_data = gpu_data.get("bf16", {})
+
+        # If old format (direct values), convert to batch dict with b_1
+        if not isinstance(f32_data, dict):
+            f32_data = {"b_1": f32_data}
+        if not isinstance(fp16_data, dict):
+            fp16_data = {"b_1": fp16_data}
+        if not isinstance(bf16_data, dict):
+            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+
+        # Get all batch sizes
+        batch_keys = set()
+        batch_keys.update(f32_data.keys())
+        batch_keys.update(fp16_data.keys())
+        batch_keys.update(bf16_data.keys())
+
         sgpu_cuda = {
-            "Q4_K": gpu_data.get("f32", 0) * 0.25,
-            "Q5_K": gpu_data.get("f32", 0) * 0.31,
-            "Q6_K": gpu_data.get("f32", 0) * 0.37,
-            "Q8_0": gpu_data.get("f32", 0) * 0.5,
-            "F16": gpu_data.get("fp16", gpu_data.get("f32", 0) * 0.75),
-            "F32": gpu_data.get("f32", 0),
+            "Q4_K": {},
+            "Q5_K": {},
+            "Q6_K": {},
+            "Q8_0": {},
+            "F16": {},
+            "BF16": {},
+            "F32": {}
         }
+
+        for batch_key in batch_keys:
+            # Check that all precisions have the same batch keys
+            if batch_key not in f32_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+            if batch_key not in fp16_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+            if batch_key not in bf16_data:
+                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+
+            f32_val = f32_data[batch_key]
+            fp16_val = fp16_data[batch_key]
+            bf16_val = bf16_data[batch_key]
+
+            sgpu_cuda["Q4_K"][batch_key] = f32_val * 0.25
+            sgpu_cuda["Q5_K"][batch_key] = f32_val * 0.31
+            sgpu_cuda["Q6_K"][batch_key] = f32_val * 0.37
+            sgpu_cuda["Q8_0"][batch_key] = f32_val * 0.5
+            sgpu_cuda["F16"][batch_key] = fp16_val
+            sgpu_cuda["BF16"][batch_key] = bf16_val
+            sgpu_cuda["F32"][batch_key] = f32_val
 
     return DeviceProfile(
         name=data.get("name", data.get("device_id", "unknown_device")),

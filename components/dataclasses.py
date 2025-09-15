@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
 QuantPerf = Dict[
-    str, float
-]  # FLOPS per-quantization key: {"Q4_K": ..., "Q8_0": ..., "F16": ..., ...}
+    str, Dict[str, float]
+]  # FLOPS per-quantization key with batch sizes: {"Q4_K": {"b_1": ..., "b_2": ..., ...}, "F16": {"b_1": ..., ...}, ...}
 
 
 @dataclass

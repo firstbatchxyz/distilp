@@ -56,11 +56,39 @@ def b_prime(model: ModelProfile) -> int:
     return model.b_layer + 2 * (model.hk * model.ek + model.hv * model.ev) * model.n_kv
 
 
-def _sum_f_over_S(f_by_q: QuantPerf, S_by_q: QuantPerf, Q: List[str]) -> float:
+def _sum_f_over_S(f_by_q: QuantPerf, S_by_q: QuantPerf, Q: List[str], batch_size: int = 1) -> float:
     """
     Helper: ∑_{q ∈ Q} f_q / S_q   (used in α_m and β_m)
+    Now handles batch sizes in S_by_q (device performance data)
+    batch_size: integer batch size (e.g., 1, 2, 4) - will be converted to "b_1", "b_2", etc.
     """
-    return sum(f_by_q[q] / S_by_q[q] for q in Q if q in f_by_q and q in S_by_q)
+    batch_key = f"b_{batch_size}"
+    total = 0.0
+    for q in Q:
+        if q in f_by_q and q in S_by_q:
+            # Handle new format where S_by_q[q] is a dict with batch sizes
+            if isinstance(S_by_q[q], dict):
+                if batch_key not in S_by_q[q]:
+                    raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]")
+                s_val = S_by_q[q][batch_key]
+            else:
+                # Old format compatibility - direct float values
+                # Get rid of this branch once all data is updated
+                s_val = S_by_q[q]
+
+            # Handle f_by_q which might also have batch sizes in future
+            if isinstance(f_by_q[q], dict):
+                if batch_key not in f_by_q[q]:
+                    raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in f_by_q[{q}]")
+                f_val = f_by_q[q][batch_key]
+            else:
+                # Current format - direct float values
+                # Get rid of this branch once all data is updated
+                f_val = f_by_q[q]
+
+            if s_val > 0:
+                total += f_val / s_val
+    return total
 
 
 def _gpu_table(dev: DeviceProfile) -> Optional[QuantPerf]:
