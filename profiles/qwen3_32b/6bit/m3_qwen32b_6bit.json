@@ -1,7 +1,7 @@
 {
   "name": "erhant-work-963.local",
   "os_type": "mac_metal",
-  "is_head": true,
+  "is_head": false,
   "is_unified_mem": true,
   "has_cuda": false,
   "has_metal": true,

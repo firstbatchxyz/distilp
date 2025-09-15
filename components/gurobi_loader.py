@@ -13,7 +13,6 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from typing import Dict, List, Any, Optional, Tuple, Union
 from .dataclasses import DeviceProfile, ModelProfile
-from ..gurobi_solver import halda_solve
 
 
 def load_device_profile(device_path: str) -> DeviceProfile:
@@ -244,22 +243,57 @@ def load_model_profile(model_path: str) -> ModelProfile:
     )
 
     # Use f_by_quant if available, otherwise create from f_q
-    if "f_by_quant" in data:
-        f_by_quant = data["f_by_quant"]
+    if "f_by_quant" in data and data["f_by_quant"]:
+        fbq = data["f_by_quant"]
+        # New format splits into {"prefill": {...}, "decode": {...}}; solver uses decode
+        if isinstance(fbq, dict) and "decode" in fbq:
+            f_by_quant = fbq["decode"]
+        else:
+            f_by_quant = fbq
     else:
-        # Fallback: create from f_q values
-        f_base = data["f_q"][1] if len(data.get("f_q", [])) > 1 else 2972385280
+        # Derive from f_q only if present in new nested format; otherwise, raise
+        fq = data.get("f_q")
+        f_base: float
+        if isinstance(fq, dict):
+            decode = fq.get("decode", {}) if isinstance(fq.get("decode"), dict) else {}
+            if not decode:
+                raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
+            # Prefer b_1; otherwise pick the smallest available batch key
+            batches = list(decode.keys())
+            batch_key = "b_1" if "b_1" in decode else None
+            if batch_key is None and batches:
+                def _batch_num(k: str) -> int:
+                    try:
+                        return int(k.split("_")[1])
+                    except Exception:
+                        return 1_000_000
+                batch_key = sorted(batches, key=_batch_num)[0]
+            arr = decode.get(batch_key) if batch_key else None
+            if not (isinstance(arr, list) and len(arr) > 1):
+                raise ValueError("f_q.decode must provide a list of per-layer FLOPs under a batch key like 'b_1'")
+            nz = next((x for x in arr if isinstance(x, (int, float)) and x > 0), None)
+            f_base = nz if nz is not None else arr[1]
+        else:
+            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode in the new format")
+
         f_by_quant = {
             "Q4_K": f_base * 0.125,  # ~1/8 of F32
             "Q5_K": f_base * 0.156,  # ~1/6.4 of F32
             "Q6_K": f_base * 0.187,  # ~1/5.3 of F32
-            "Q8_0": f_base * 0.25,  # 1/4 of F32
-            "F16": f_base * 0.5,  # 1/2 of F32
+            "Q8_0": f_base * 0.25,   # 1/4 of F32
+            "F16": f_base * 0.5,     # 1/2 of F32
             "F32": f_base,
         }
 
     # Use f_out_by_quant if available, otherwise use same as f_by_quant
-    f_out_by_quant = data.get("f_out_by_quant", f_by_quant)
+    if "f_out_by_quant" in data and data["f_out_by_quant"]:
+        foq = data["f_out_by_quant"]
+        if isinstance(foq, dict) and "decode" in foq:
+            f_out_by_quant = foq["decode"]
+        else:
+            f_out_by_quant = foq
+    else:
+        f_out_by_quant = f_by_quant
 
     # Get quantization list
     Q = data.get("Q", ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "F32"])
@@ -695,15 +729,38 @@ def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
         else data.get("b_out", 28672000)
     )
 
-    # Use f_by_quant if available
+    # Use f_by_quant if available (support prefill/decode split); fallback from f_q
     if "f_by_quant" in data and data["f_by_quant"]:
-        f_by_quant = data["f_by_quant"]
+        fbq = data["f_by_quant"]
+        if isinstance(fbq, dict) and "decode" in fbq:
+            f_by_quant = fbq["decode"]
+        else:
+            f_by_quant = fbq
     else:
-        f_base = (
-            data["f_q"][1]
-            if isinstance(data.get("f_q"), list) and len(data["f_q"]) > 1
-            else 2972385280
-        )
+        # Derive from f_q only if present in new nested format; otherwise, raise
+        fq = data.get("f_q")
+        if isinstance(fq, dict):
+            decode = fq.get("decode", {}) if isinstance(fq.get("decode"), dict) else {}
+            if not decode:
+                raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
+            # Prefer b_1 if available, otherwise smallest batch
+            if "b_1" in decode and isinstance(decode["b_1"], list) and decode["b_1"]:
+                arr = decode["b_1"]
+            else:
+                def _batch_num(k: str) -> int:
+                    try:
+                        return int(k.split("_")[1])
+                    except Exception:
+                        return 1_000_000
+                bk = sorted(decode.keys(), key=_batch_num)[0]
+                arr = decode[bk]
+            if not (isinstance(arr, list) and len(arr) > 1):
+                raise ValueError("f_q.decode must provide a non-empty list under a batch key like 'b_1'")
+            nz = next((x for x in arr if isinstance(x, (int, float)) and x > 0), None)
+            f_base = nz if nz is not None else arr[1]
+        else:
+            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode in the new format")
+
         f_by_quant = {
             "Q4_K": f_base * 0.125,
             "Q5_K": f_base * 0.156,
@@ -713,7 +770,15 @@ def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
             "F32": f_base,
         }
 
-    f_out_by_quant = data.get("f_out_by_quant", f_by_quant)
+    # Use f_out_by_quant if available, otherwise mirror f_by_quant
+    if "f_out_by_quant" in data and data["f_out_by_quant"]:
+        foq = data["f_out_by_quant"]
+        if isinstance(foq, dict) and "decode" in foq:
+            f_out_by_quant = foq["decode"]
+        else:
+            f_out_by_quant = foq
+    else:
+        f_out_by_quant = f_by_quant
     Q = data.get("Q", ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "F32"])
 
     return ModelProfile(
@@ -780,8 +845,21 @@ def main():
                 print(f"    CUDA memory: {cuda_gb:.1f}GB")
 
         if args.test:
+            # Lazy import to avoid relative-import issues when using loader standalone
+            try:
+                from ..gurobi_solver import halda_solve as _halda_solve
+            except Exception:
+                try:
+                    from gurobi_solver import halda_solve as _halda_solve
+                except Exception:
+                    _halda_solve = None
+
+            if _halda_solve is None:
+                print("HALDA solver not available; skipping --test run.")
+                return 0
+
             print("\nRunning HALDA solver...")
-            result = halda_solve(
+            result = _halda_solve(
                 devices,
                 model,
                 sdisk_threshold=None,
