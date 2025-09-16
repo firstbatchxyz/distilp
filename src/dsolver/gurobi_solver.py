@@ -25,8 +25,8 @@ try:
     from .components.plotter import plot_k_curve
 except Exception:
     # Script context fallback
-    from components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-    from components.plotter import plot_k_curve
+    from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
+    from .components.plotter import plot_k_curve
 
 
 # --------------------------------------
