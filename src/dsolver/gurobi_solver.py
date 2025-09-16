@@ -12,8 +12,8 @@ References to the paper (prima.cpp / Halda):
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Iterable, Tuple
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Iterable, Tuple, Literal
 import math
 
 import gurobipy as gp
@@ -62,7 +62,7 @@ def b_prime(model: ModelProfile) -> int:
     return model.b_layer + 2 * (model.hk * model.ek + model.hv * model.ev) * model.n_kv
 
 
-def _sum_f_over_S(f_by_q: QuantPerf, S_by_q: QuantPerf, Q: List[str], batch_size: int = 1) -> float:
+def _sum_f_over_S(f_by_q: Dict[str, QuantPerf], S_by_q: Dict[str, QuantPerf], q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"], batch_size: int = 1) -> float:
     """
     Helper: ∑_{q ∈ Q} f_q / S_q   (used in α_m and β_m)
     Now handles batch sizes in S_by_q (device performance data)
@@ -70,30 +70,25 @@ def _sum_f_over_S(f_by_q: QuantPerf, S_by_q: QuantPerf, Q: List[str], batch_size
     """
     batch_key = f"b_{batch_size}"
     total = 0.0
-    for q in Q:
-        if q in f_by_q and q in S_by_q:
-            # Handle new format where S_by_q[q] is a dict with batch sizes
-            if isinstance(S_by_q[q], dict):
-                if batch_key not in S_by_q[q]:
-                    raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]")
-                s_val = S_by_q[q][batch_key]
-            else:
-                # Old format compatibility - direct float values
-                # Get rid of this branch once all data is updated
-                s_val = S_by_q[q]
+    if batch_key in f_by_q and q in S_by_q:
+        # Handle new format where S_by_q[q] is a dict with batch sizes
+        if isinstance(S_by_q[q], dict):
+            if batch_key not in S_by_q[q]:
+                raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]")
+            s_val = S_by_q[q][batch_key]
+        else:
+            # Old format compatibility - direct float values
+            # Get rid of this branch once all data is updated
+            s_val = S_by_q[q]
 
-            # Handle f_by_q which might also have batch sizes in future
-            if isinstance(f_by_q[q], dict):
-                if batch_key not in f_by_q[q]:
-                    raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in f_by_q[{q}]")
-                f_val = f_by_q[q][batch_key]
-            else:
-                # Current format - direct float values
-                # Get rid of this branch once all data is updated
-                f_val = f_by_q[q]
+        # Handle f_by_q which might also have batch sizes in future
+        if isinstance(f_by_q, dict):
+            if batch_key not in f_by_q:
+                raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in f_by_q[{q}]")
+            f_val = f_by_q[batch_key]
 
-            if s_val > 0:
-                total += f_val / s_val
+        if s_val > 0:
+            total += f_val / s_val
     return total
 
 
@@ -131,14 +126,14 @@ def alpha_beta_xi(
     """
     bprime = b_prime(model)
     # α_m (CPU path)
-    comp_cpu = _sum_f_over_S(model.f_by_quant, dev.scpu, model.Q)
+    comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)
     alpha = comp_cpu + dev.t_kvcpy_cpu + (bprime / dev.T_cpu)
 
     # β_m (GPU minus CPU path), 0 if no GPU available
     S_gpu = _gpu_table(dev)
     T_gpu = _pick_T_gpu(dev)
     if S_gpu is not None and T_gpu is not None:
-        comp_gpu_minus_cpu = _sum_f_over_S(model.f_by_quant, S_gpu, model.Q) - comp_cpu
+        comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu
         beta = (
             comp_gpu_minus_cpu
             + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
@@ -277,7 +272,7 @@ def kappa_constant(
     head_idx = next((i for i, d in enumerate(devs) if d.is_head), 0)
     head = devs[head_idx]
 
-    head_compute = _sum_f_over_S(model.f_out_by_quant, head.scpu, model.Q)
+    head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)
     head_load_regs = (model.b_in / model.V + model.b_out) / head.T_cpu
     head_disk_in = model.b_in / (model.V * head.s_disk)
     head_disk_out = (

@@ -3,8 +3,8 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Literal, Optional
 
 QuantPerf = Dict[
     str, Dict[str, float]
@@ -79,9 +79,7 @@ class ModelProfile:
     e_embed: int  # embedding size,    e
     V: int  # vocabulary size,   V
 
-    # FLOPs per layer for each quantization, and for the output layer:
-    f_by_quant: QuantPerf  # f_q          (per "typical" layer)
-    f_out_by_quant: QuantPerf  # f_{q, out}   (for output layer)
-    Q: List[str] = field(
-        default_factory=lambda: ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "F32"]
-    )
+    # FLOPs per layer per batch_size, and for the output layer:
+    f_q: Dict[str, QuantPerf]  # (batch_size, f_q) (per "typical" layer), per batch size
+    f_out: Dict[str, QuantPerf]  # (batch_size,f_{q, out})   (for output layer)
+    Q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"] # Model quantization level

@@ -242,78 +242,57 @@ def load_model_profile(model_path: str) -> ModelProfile:
         data["b_o"][1] if len(data.get("b_o", [])) > 1 else data.get("b_out", 28672000)
     )
 
-    # Use f_by_quant if available, otherwise create from f_q
-    if "f_by_quant" in data and data["f_by_quant"]:
-        fbq = data["f_by_quant"]
-        # New format splits into {"prefill": {...}, "decode": {...}}; solver uses decode
-        if isinstance(fbq, dict) and "decode" in fbq:
-            f_by_quant = fbq["decode"]
-        else:
-            f_by_quant = fbq
-    else:
-        # Derive from f_q only if present in new nested format; otherwise, raise
-        fq = data.get("f_q")
-        f_base: float
-        if isinstance(fq, dict):
-            decode = fq.get("decode", {}) if isinstance(fq.get("decode"), dict) else {}
-            if not decode:
-                raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
-            # Prefer b_1; otherwise pick the smallest available batch key
-            batches = list(decode.keys())
-            batch_key = "b_1" if "b_1" in decode else None
-            if batch_key is None and batches:
-                def _batch_num(k: str) -> int:
-                    try:
-                        return int(k.split("_")[1])
-                    except Exception:
-                        return 1_000_000
-                batch_key = sorted(batches, key=_batch_num)[0]
-            arr = decode.get(batch_key) if batch_key else None
-            if not (isinstance(arr, list) and len(arr) > 1):
-                raise ValueError("f_q.decode must provide a list of per-layer FLOPs under a batch key like 'b_1'")
-            nz = next((x for x in arr if isinstance(x, (int, float)) and x > 0), None)
-            f_base = nz if nz is not None else arr[1]
-        else:
-            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode in the new format")
+    fqd = data.get("f_q")
+    f_q = {}
+    if isinstance(fqd, dict):
+        decode = fqd.get("decode", {}) if isinstance(fqd.get("decode"), dict) else {}
+        if not decode:
+            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
 
-        f_by_quant = {
-            "Q4_K": f_base * 0.125,  # ~1/8 of F32
-            "Q5_K": f_base * 0.156,  # ~1/6.4 of F32
-            "Q6_K": f_base * 0.187,  # ~1/5.3 of F32
-            "Q8_0": f_base * 0.25,   # 1/4 of F32
-            "F16": f_base * 0.5,     # 1/2 of F32
-            "F32": f_base,
-        }
-
-    # Use f_out_by_quant if available, otherwise use same as f_by_quant
-    if "f_out_by_quant" in data and data["f_out_by_quant"]:
-        foq = data["f_out_by_quant"]
-        if isinstance(foq, dict) and "decode" in foq:
-            f_out_by_quant = foq["decode"]
-        else:
-            f_out_by_quant = foq
+        batches = list(decode.keys())
+        for key in batches:
+            if len(decode[key]) != L + 1:
+                raise ValueError(f"f_q.decode batch '{key}' must have L+1={L+1} entries, found {len(decode[key])}")
+            f_q[key] = decode[key][1]
     else:
-        f_out_by_quant = f_by_quant
+        raise ValueError("Model profile must include f_q.decode")
+
+    foutd = data.get("f_out")
+    f_out = {}
+    if isinstance(foutd, dict):
+        decode = foutd.get("decode", {}) if isinstance(foutd.get("decode"), dict) else {}
+        if not decode:
+            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
+        batches = list(decode.keys())
+        for key in batches:
+            f_out[key] = decode[key]
+    else:
+        raise ValueError("Model profile must include f_out.decode")
 
     # Get quantization list
-    Q = data.get("Q", ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "F32"])
+    Q = data["quantization"] if "quantization" in data else None
+    if not Q:
+        raise ValueError("Model profile must include 'quantization' list")
 
-    return ModelProfile(
-        L=L,
-        b_layer=b_layer,
-        b_in=b_in,
-        b_out=b_out,
-        hk=data.get("hk", 8),
-        ek=data.get("ek", 128),
-        hv=data.get("hv", 8),
-        ev=data.get("ev", 128),
-        n_kv=data.get("n_kv", 40960),
-        e_embed=data.get("e_embed", 2560),
-        V=data.get("V", 151936),
-        f_by_quant=f_by_quant,
-        f_out_by_quant=f_out_by_quant,
-        Q=Q,
-    )
+    try:
+        return ModelProfile(
+            L=L,
+            b_layer=b_layer,
+            b_in=b_in,
+            b_out=b_out,
+            hk=data["hk"],
+            ek=data["ek"],
+            hv=data["hv"],
+            ev=data["ev"],
+            n_kv=data["n_kv"],
+            e_embed=data["e_embed"],
+            V=data["V"],
+            f_q=f_q,
+            f_out=f_out,
+            Q=Q,
+        )
+    except Exception as e :
+        raise ValueError(f"Error creating ModelProfile: {e}")
 
 
 def load_devices_and_model(
