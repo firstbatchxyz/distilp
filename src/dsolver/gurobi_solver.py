@@ -543,7 +543,7 @@ def halda_solve(
             plot_k_curve(
                 per_k_objs,
                 k_star=best_of_this_round.k,
-                title="HALDA: k vs objective (final sweep)",
+                title="HALDA: k vs objective (final sweep), b= " + str(b),
                 # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
             )
 
@@ -557,6 +557,6 @@ def halda_solve(
         plot_batch_tpot(
             tpots,
             batch_list,
-            # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+            # save_path="batch_vs_tpot.png",  # uncomment to save a PNG instead of only showing
         )
     return best
