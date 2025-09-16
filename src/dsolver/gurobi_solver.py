@@ -470,10 +470,8 @@ def halda_solve(
     model: ModelProfile,
     sdisk_threshold: Optional[float] = None,
     k_candidates: Optional[Iterable[int]] = None,
-    time_limit_per_k: Optional[float] = None,
     mip_gap: Optional[float] = 1e-4,
     # strict_eps_bytes: float = 1.0,
-    max_outer_iters: int = 50,
     plot: bool = True,
 
 ) -> HALDAResult:
@@ -490,7 +488,7 @@ def halda_solve(
     best: Optional[HALDAResult] = None
     best_of_all_rounds = []
     sets = assign_sets(devs)
-    # _print_sets(sets, devs)
+
     batch_list = [1, 2, 4, 8, 16]
 
     for b in batch_list:
