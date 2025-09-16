@@ -7,32 +7,31 @@ This script loads profiles from JSON files and runs the gurobi solver.
 import argparse
 import json
 import sys
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 # Be resilient to being run as a script or module
 try:
     # Package-style imports
-    from .components.gurobi_loader import (
+    from src.dsolver.components.gurobi_loader import (
         load_devices_and_model,
         load_from_combined_json,
         load_from_profile_folder,
         load_device_profile,
         load_model_profile,
     )
-    from .components.dataclasses import DeviceProfile, ModelProfile
-    from .gurobi_solver import halda_solve
+    from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
+    from src.dsolver.gurobi_solver import halda_solve
 except Exception:
     # Script-style fallback
-    from components.gurobi_loader import (
+    from src.dsolver.components.gurobi_loader import (
         load_devices_and_model,
         load_from_combined_json,
         load_from_profile_folder,
         load_device_profile,
         load_model_profile,
     )
-    from components.dataclasses import DeviceProfile, ModelProfile
-    from gurobi_solver import halda_solve
+    from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
+    from src.dsolver.gurobi_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
