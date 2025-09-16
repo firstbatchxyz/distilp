@@ -22,11 +22,11 @@ from gurobipy import GRB
 try:
     # Package context
     from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-    from .components.plotter import plot_k_curve
+    from .components.plotter import plot_k_curve, plot_batch_tpot
 except Exception:
     # Script context fallback
     from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-    from .components.plotter import plot_k_curve
+    from .components.plotter import plot_k_curve, plot_batch_tpot
 
 
 # --------------------------------------
@@ -55,11 +55,11 @@ def valid_factors_of_L(L: int) -> List[int]:
 # ---------------------------------------------------------
 
 
-def b_prime(model: ModelProfile) -> int:
+def b_prime(model: ModelProfile, batch_size: int = 1) -> int:
     """
     b' = b + 2(h_k e_k + h_v e_v) · n_kv.  [App. A.3, after Assumption 1]
     """
-    return model.b_layer + 2 * (model.hk * model.ek + model.hv * model.ev) * model.n_kv
+    return model.b_layer + 2 * (model.hk * model.ek + model.hv * model.ev) * model.n_kv * batch_size
 
 
 def _sum_f_over_S(f_by_q: Dict[str, QuantPerf], S_by_q: Dict[str, QuantPerf], q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"], batch_size: int = 1) -> float:
@@ -115,7 +115,7 @@ def _pick_T_gpu(dev: DeviceProfile) -> Optional[float]:
 
 
 def alpha_beta_xi(
-    dev: DeviceProfile, model: ModelProfile
+    dev: DeviceProfile, model: ModelProfile, batch_size: int = 1
 ) -> Tuple[float, float, float]:
     """
     α_m, β_m, ξ_m exactly as defined under Assumption 1.  [App. A.3, Eq. 21 block]
@@ -127,7 +127,7 @@ def alpha_beta_xi(
     bprime = b_prime(model)
     # α_m (CPU path)
     comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)
-    alpha = comp_cpu + dev.t_kvcpy_cpu + (bprime / dev.T_cpu)
+    alpha = comp_cpu + dev.t_kvcpy_cpu * batch_size + (bprime / dev.T_cpu)
 
     # β_m (GPU minus CPU path), 0 if no GPU available
     S_gpu = _gpu_table(dev)
@@ -136,7 +136,7 @@ def alpha_beta_xi(
         comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu
         beta = (
             comp_gpu_minus_cpu
-            + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
+            + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu) * batch_size
             + (bprime / T_gpu - bprime / dev.T_cpu)
         )
     else:
@@ -146,7 +146,7 @@ def alpha_beta_xi(
     # dev.t_ram2vram + dev.t_vram2ram is done once per round as it is done for sequence of layers within a window.
     xi = (dev.t_ram2vram + dev.t_vram2ram) * (
         0 if dev.is_unified_mem else 1
-    ) + dev.t_comm
+    ) + dev.t_comm * batch_size
     return alpha, beta, xi
 
 
@@ -214,6 +214,7 @@ def objective_vectors(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
+    batch_size: int = 1,
 ) -> Tuple[List[float], List[float], List[float]]:
     """
     Build a, b, c as in the vectorized form (block right after ILFP).  [App. A.3]
@@ -231,10 +232,8 @@ def objective_vectors(
     b: List[float] = [0.0] * len(devs)
     c: List[float] = [0.0] * len(devs)
 
-    bprime = b_prime(model)
-
     for i, d in enumerate(devs):
-        alpha, beta, xi = alpha_beta_xi(d, model)
+        alpha, beta, xi = alpha_beta_xi(d, model, batch_size)
         print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
@@ -308,6 +307,7 @@ def solve_fixed_k_ilp(
     k: int,
     time_limit: Optional[float] = None,
     mip_gap: Optional[float] = 1e-4,
+    batch_size: int = 1,
 ) -> ILPResult:
     """
     Build and solve the fixed-k ILP:
@@ -321,12 +321,12 @@ def solve_fixed_k_ilp(
     M = len(devs)
     # print(M)
     W = model.L // k
-    bprime = b_prime(model)
+    bprime = b_prime(model, batch_size)
     Lb = model.L * bprime
     disk_size = 2000000000000
     disk_speed_threshold = 51446428  # removed one digit from the end (s_disk of M4), THIS HAS TO BE CHANGED
     # Coefficients [App. A.3]
-    a, b, c = objective_vectors(devs, model, sets)
+    a, b, c = objective_vectors(devs, model, sets, batch_size)
     kappa = kappa_constant(devs, model, sets)
 
     # Create model
@@ -445,6 +445,8 @@ class HALDAResult:
     k: int  # best k
     obj_value: float  # objective value for the best (w*,n*,k)
     sets: Dict[str, List[int]]  # final sets M1..M4
+    batch_size: int  # batch
+    tpot: float
     # iterations: int  # outer-loop iterations
     # forced_M4: List[int]  # indices forced into M4 during calibration
 
@@ -473,6 +475,7 @@ def halda_solve(
     # strict_eps_bytes: float = 1.0,
     max_outer_iters: int = 50,
     plot: bool = True,
+
 ) -> HALDAResult:
     """
     Full Algorithm 1 (HALDA), lines 1-17.  [Sec. 3.3]
@@ -485,54 +488,75 @@ def halda_solve(
     # ----- line 3: k candidates -----
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
     best: Optional[HALDAResult] = None
-
+    best_of_all_rounds = []
     sets = assign_sets(devs)
     # _print_sets(sets, devs)
+    batch_list = [1, 2, 4, 8, 16]
 
-    best_this_round: Optional[ILPResult] = None
-    per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
-    print("Objectives by k")
-    for kf in Ks:
-        try:
+    for b in batch_list:
 
-            print("k: " + str(kf))
-            res = solve_fixed_k_ilp(
-                devs,
-                model,
-                sets,
-                kf,
-                time_limit=3600,
-                mip_gap=mip_gap,
-            )
-            per_k_objs.append((kf, res.obj_value))
-            print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
-            if (best_this_round is None) or (res.obj_value < best_this_round.obj_value):
-                best_this_round = res
-        except RuntimeError:
-            per_k_objs.append((kf, None))
-            print(f"  k={kf:<4d}  obj=infeasible")
-    if best_this_round is None:
-        raise RuntimeError("No feasible ILP found for any k this round.")
+        best_this_round: Optional[ILPResult] = None
+        per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
+        print("Objectives by k")
+        for kf in Ks:
+            try:
 
-    # ----- line 16: accept the best (w*, n*) this round -----
-    w = list(best_this_round.w)
-    n = list(best_this_round.n)
+                print("k: " + str(kf))
+                res = solve_fixed_k_ilp(
+                    devs,
+                    model,
+                    sets,
+                    kf,
+                    time_limit=3600,
+                    mip_gap=mip_gap,
+                    batch_size=b,
+                )
+                per_k_objs.append((kf, res.obj_value))
+                print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
+                if (best_this_round is None) or (res.obj_value < best_this_round.obj_value):
+                    best_this_round = res
+            except RuntimeError:
+                per_k_objs.append((kf, None))
+                print(f"  k={kf:<4d}  obj=infeasible")
+        if best_this_round is None:
+            raise RuntimeError("No feasible ILP found for any k this round.")
 
-    # track best overall
-    if (best is None) or (best_this_round.obj_value < best.obj_value):
-        best = HALDAResult(
+        # ----- line 16: accept the best (w*, n*) this round -----
+        w = list(best_this_round.w)
+        n = list(best_this_round.n)
+
+        # track best overall
+
+        best_of_this_round = HALDAResult(
             w=w,
             n=n,
             k=best_this_round.k,
             obj_value=best_this_round.obj_value,
             sets={k: list(v) for k, v in sets.items()},
+            batch_size=b,
+            tpot=round(best_this_round.obj_value/b, 6)
         )
 
+        best_of_all_rounds.append(best_of_this_round)
+
+        if plot:
+            plot_k_curve(
+                per_k_objs,
+                k_star=best_of_this_round.k,
+                title="HALDA: k vs objective (final sweep)",
+                # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+            )
+
+    tpots = []
+    for candidate in best_of_all_rounds:
+        tpots.append(candidate.tpot)
+        if (best is None) or (candidate.tpot < best.tpot):
+            best = candidate
+
     if plot:
-        plot_k_curve(
-            per_k_objs,
-            k_star=(best.k if best is not None else None),
-            title="HALDA: k vs objective (final sweep)",
+        plot_batch_tpot(
+            tpots,
+            batch_list,
             # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
         )
     return best

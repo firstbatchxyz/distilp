@@ -83,7 +83,9 @@ def print_solution(result, devices: List[DeviceProfile]) -> None:
     print(f"{'='*60}")
 
     print(f"\nOptimal k: {result.k}")
-    print(f"Objective value: {result.obj_value:.6f}")
+    print(f"Optimal batch size: {result.batch_size}")
+    print(f"\nObjective value: {result.obj_value:.6f}")
+    print(f"TPOT: {result.tpot}")
     # print(f"Iterations: {result.iterations}")
 
     print("\nLayer distribution (w):")

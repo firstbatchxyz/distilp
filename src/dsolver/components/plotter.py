@@ -33,13 +33,38 @@ def plot_k_curve(
     plt.xticks(ks)
     plt.ylabel("Objective (estimated latency)")
     plt.title(title)
-    # plt.grid(True)
 
-    # if k_star is not None:
-    #     plt.axvline(k_star, linestyle="--")
-    #     # Mark the point if it exists among the plotted ks
-    #     if k_star in ks:
-    #         plt.scatter([k_star], [vals[ks.index(k_star)]], zorder=3)
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=150)
+        print(f"Saved plot to {save_path}")
+
+    # Try to show (will no-op on headless backends)
+    try:
+        plt.show()
+    except Exception:
+        pass
+    finally:
+        plt.close()
+
+
+def plot_batch_tpot(
+    tpots: List[float],
+    batches: List[int],
+    title: str = "HALDA: batch size vs TPOT",
+    save_path: Optional[str] = None,
+) -> None:
+    if plt is None:
+        print("matplotlib not available; skipping plot.")
+        return
+
+    plt.figure()
+    plt.plot(batches, tpots, marker="o")
+    plt.xlabel("Batch size")
+    plt.xticks(batches)
+    plt.ylabel("Time to generate one token")
+    plt.title(title)
 
     plt.tight_layout()
 
