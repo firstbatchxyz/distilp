@@ -22,11 +22,11 @@ from gurobipy import GRB
 try:
     # Package context
     from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-    from .components.plotter import plot_k_curve, plot_batch_tpot
+    from .components.plotter import plot_k_curve, plot_batch_tpot, plot_k_curves_by_batch
 except Exception:
     # Script context fallback
     from .components.dataclasses import DeviceProfile, ModelProfile, QuantPerf
-    from .components.plotter import plot_k_curve, plot_batch_tpot
+    from .components.plotter import plot_k_curve, plot_batch_tpot, plot_k_curves_by_batch
 
 
 # --------------------------------------
@@ -488,7 +488,8 @@ def halda_solve(
     best: Optional[HALDAResult] = None
     best_of_all_rounds = []
     sets = assign_sets(devs)
-
+    per_batch_results = {}
+    k_stars = {}
     batch_list = [1, 2, 4, 8, 16]
 
     for b in batch_list:
@@ -518,6 +519,9 @@ def halda_solve(
                 print(f"  k={kf:<4d}  obj=infeasible")
         if best_this_round is None:
             continue
+        else:
+            per_batch_results[b] = per_k_objs
+            k_stars[b] = best_this_round.k
         #     raise RuntimeError("No feasible ILP found for any k this round.")
 
         # ----- line 16: accept the best (w*, n*) this round -----
@@ -538,13 +542,21 @@ def halda_solve(
 
         best_of_all_rounds.append(best_of_this_round)
 
-        if plot:
-            plot_k_curve(
-                per_k_objs,
-                k_star=best_of_this_round.k,
-                title="HALDA: k vs objective (final sweep), b=" + str(b),
-                # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
-            )
+        # if plot:
+        #     plot_k_curve(
+        #         per_k_objs,
+        #         k_star=best_of_this_round.k,
+        #         title="HALDA: k vs objective (final sweep), b=" + str(b),
+        #         # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+        #     )
+
+    plot_k_curves_by_batch(
+        per_batch_results,
+        k_stars=k_stars,
+        title="HALDA: k vs objective across batches",
+        save_path="multi_batch_k_vs_obj.png",
+        show=True,
+    )
 
     tpots = []
     for candidate in best_of_all_rounds:
