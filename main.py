@@ -226,9 +226,9 @@ Examples:
             model,
             sdisk_threshold=args.sdisk_threshold,
             k_candidates=args.k_candidates,
-            time_limit_per_k=args.time_limit,
+
             mip_gap=args.mip_gap,
-            max_outer_iters=args.max_iters,
+
             plot=not args.no_plot,
         )
 
