@@ -517,7 +517,8 @@ def halda_solve(
                 per_k_objs.append((kf, None))
                 print(f"  k={kf:<4d}  obj=infeasible")
         if best_this_round is None:
-            raise RuntimeError("No feasible ILP found for any k this round.")
+            continue
+        #     raise RuntimeError("No feasible ILP found for any k this round.")
 
         # ----- line 16: accept the best (w*, n*) this round -----
         w = list(best_this_round.w)
@@ -554,7 +555,7 @@ def halda_solve(
     if plot:
         plot_batch_tpot(
             tpots,
-            batch_list,
+            [i.batch_size for i in best_of_all_rounds],
             # save_path="batch_vs_tpot.png",  # uncomment to save a PNG instead of only showing
         )
     return best
