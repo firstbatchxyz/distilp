@@ -473,6 +473,7 @@ def halda_solve(
     mip_gap: Optional[float] = 1e-4,
     # strict_eps_bytes: float = 1.0,
     plot: bool = True,
+    batch_list: List[int] = [1],
 
 ) -> HALDAResult:
     """
@@ -490,7 +491,11 @@ def halda_solve(
     sets = assign_sets(devs)
     per_batch_results = {}
     k_stars = {}
-    batch_list = [1, 2, 4, 8, 16]
+    # batch_list = [1, 2, 4, 8, 16]
+    if batch_list == [1]:
+        is_batch = False
+    else:
+        is_batch = True
 
     for b in batch_list:
 
@@ -537,37 +542,43 @@ def halda_solve(
             obj_value=best_this_round.obj_value,
             sets={k: list(v) for k, v in sets.items()},
             batch_size=b,
-            tpot=round(best_this_round.obj_value/b, 6)
+            tpot=round(best_this_round.obj_value/(b if is_batch else 1), 6)
         )
 
-        best_of_all_rounds.append(best_of_this_round)
+        if not is_batch:
+            if plot:
+                plot_k_curve(
+                    per_k_objs,
+                    k_star=best_of_this_round.k,
+                    title="HALDA: k vs objective (final sweep), b=" + str(b),
+                    # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
+                )
+            best = best_of_this_round
+        else:
+            best_of_all_rounds.append(best_of_this_round)
 
-        # if plot:
-        #     plot_k_curve(
-        #         per_k_objs,
-        #         k_star=best_of_this_round.k,
-        #         title="HALDA: k vs objective (final sweep), b=" + str(b),
-        #         # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
-        #     )
 
-    plot_k_curves_by_batch(
-        per_batch_results,
-        k_stars=k_stars,
-        title="HALDA: k vs objective across batches",
-        save_path="multi_batch_k_vs_obj.png",
-        show=True,
-    )
 
-    tpots = []
-    for candidate in best_of_all_rounds:
-        tpots.append(candidate.tpot)
-        if (best is None) or (candidate.tpot < best.tpot):
-            best = candidate
 
-    if plot:
-        plot_batch_tpot(
-            tpots,
-            [i.batch_size for i in best_of_all_rounds],
-            # save_path="batch_vs_tpot.png",  # uncomment to save a PNG instead of only showing
+    if is_batch:
+
+        plot_k_curves_by_batch(
+            per_batch_results,
+            k_stars=k_stars,
+            title="HALDA: k vs objective across batches",
+            save_path="multi_batch_k_vs_obj.png",
+            show=True,
         )
+        tpots = []
+        for candidate in best_of_all_rounds:
+            tpots.append(candidate.tpot)
+            if (best is None) or (candidate.tpot < best.tpot):
+                best = candidate
+
+        if plot:
+            plot_batch_tpot(
+                tpots,
+                [i.batch_size for i in best_of_all_rounds],
+                # save_path="batch_vs_tpot.png",  # uncomment to save a PNG instead of only showing
+            )
     return best
