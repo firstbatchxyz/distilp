@@ -542,7 +542,7 @@ def halda_solve(
             obj_value=best_this_round.obj_value,
             sets={k: list(v) for k, v in sets.items()},
             batch_size=b,
-            tpot=round(best_this_round.obj_value/(b if is_batch else 1), 6)
+            tpot=round(best_this_round.obj_value/b, 6)
         )
 
         if not is_batch:
