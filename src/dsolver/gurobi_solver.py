@@ -240,11 +240,13 @@ def alpha_beta(
     """
     # bprime = b_prime(model)
     # α_m (CPU path)
+    req_flops_by_router = model.router_flops["1"]
+    req_flops_by_attention = model.attn_flops["decode"]["b1"][0]
     req_flops_by_expert = model.flops_per_active_expert_per_token[0]
     flops_by_device_cpu = dev.scpu["fp16"]["b_1"]
 
     # comp_cpu = _sum_f_over_S(model.f_by_quant, dev.scpu, model.Q)
-    comp_cpu = req_flops_by_expert/flops_by_device_cpu
+    comp_cpu = (req_flops_by_expert + req_flops_by_router + req_flops_by_attention)/flops_by_device_cpu
     alpha = (comp_cpu)
              # + dev.t_kvcpy_cpu + (bprime / dev.T_cpu))
 
@@ -254,7 +256,7 @@ def alpha_beta(
     if S_gpu is not None and T_gpu is not None:
         flops_by_device_gpu = S_gpu["fp16"]["b_1"]
         # comp_gpu = _sum_f_over_S(model.f_by_quant, S_gpu, model.Q)
-        comp_gpu = req_flops_by_expert/flops_by_device_gpu
+        comp_gpu = (req_flops_by_expert+req_flops_by_router+req_flops_by_attention)/flops_by_device_gpu
         beta = (
             comp_gpu
             # + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
@@ -322,12 +324,14 @@ def gurobi_solve(
 )-> ILPResult:
     M = len(devs)
     L = model.L
-    E = len(model.flops_per_active_expert_per_token)
+    E = model.n_routed_experts
 
     sets = assign_sets(devs)
     kv_cache_size = kv_size(model)
     router_size = model.router_bytes["1"]
     expert_size = model.bytes_per_expert["1"]
+    attention_size = model.attn_bytes["1"]
+
     alpha, beta = objective_vectors(devs, model, sets)
 
     transitions, layers = load_transitions(path)
@@ -391,14 +395,14 @@ def gurobi_solve(
         rhs = devs[d].d_avail_ram
         m.addConstr(
             gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size) for l in range(L)), name=f"M1_ram[{d}]")
+                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M1_ram[{d}]")
 
     for d in sets["M2"]:
         dev_metal = float(devs[d].d_avail_metal or 0)
         rhs = dev_metal - devs[d].c_gpu
         m.addConstr(
             gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size) for l in range(L)), name=f"M2_ram[{d}]")
+                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M2_ram[{d}]")
 
     # VRAM
     for d in range(M):
@@ -411,7 +415,7 @@ def gurobi_solve(
         if i.has_metal and i.d_avail_metal is not None:
             rhs = i.d_avail_metal - i.c_gpu
             m.addConstr(gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size) for l in range(L)), name=f"metal_shared[{i}]")
+                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"metal_shared[{i}]")
 
     # No GPU
     for d in range(M):
