@@ -20,7 +20,7 @@ try:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import halda_solve
+    from src.dsolver.gurobi_solver import gurobi_solve
 except Exception:
     # Script-style fallback
     from src.dsolver.components.gurobi_loader import (
@@ -31,7 +31,7 @@ except Exception:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import halda_solve
+    # from src.dsolver.gurobi_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
@@ -213,36 +213,37 @@ Examples:
         elif not args.quiet:
             print(f"\nLoaded {len(devices)} device(s) and model with {model.L} layers")
 
-        # Run HALDA solver
+        # Run MOEdelo solver
         if not args.quiet:
             print(f"\n{'='*60}")
-            print("Running HALDA solver...")
+            print("Running MOEdelo solver...")
             print(f"{'='*60}")
 
-        result = halda_solve(
+        result = gurobi_solve(
+             "gpt_oss_20b_10k_1024_random.json",
             devices,
             model,
-            sdisk_threshold=args.sdisk_threshold,
-            k_candidates=args.k_candidates,
-            time_limit_per_k=args.time_limit,
-            mip_gap=args.mip_gap,
-            max_outer_iters=args.max_iters,
-            plot=not args.no_plot,
+            # sdisk_threshold=args.sdisk_threshold,
+            # k_candidates=args.k_candidates,
+            # time_limit_per_k=args.time_limit,
+            # mip_gap=args.mip_gap,
+            # max_outer_iters=args.max_iters,
+            # plot=not args.no_plot,
         )
 
         # Print solution
         if args.quiet:
             # Minimal output
-            print(f"k={result.k}, obj={result.obj_value:.6f}")
-            for dev, wi in zip(devices, result.w):
-                print(f"{dev.name}: {wi}")
+            print(f"obj={result.obj_value:.6f}")
+            for exp, layer, dev, val in zip(devices, result.y):
+                print(f"{exp}, {layer}, {dev.name}: {val}")
         else:
             print_solution(result, devices)
 
         # Save solution if requested
         if args.save_solution:
             solution_data = {
-                "k": result.k,
+                "y": result.y,
                 "objective_value": result.obj_value,
                 # "iterations": result.iterations,
                 "layer_distribution": {
@@ -256,7 +257,7 @@ Examples:
                 # "forced_M4": [devices[i].name for i in result.forced_M4],
             }
 
-            with open(args.save_solution, "w") as f:
+            with open(args.save_solution, "y") as f:
                 json.dump(solution_data, f, indent=2)
 
             if not args.quiet:
