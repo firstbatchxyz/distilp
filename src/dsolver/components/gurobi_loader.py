@@ -706,77 +706,52 @@ def load_model(model_source: Union[str, Dict[str, Any]]) -> ModelProfile:
 
 
 def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
-    """Load ModelProfile from dictionary."""
+    """Load ModelProfile from dictionary in the new profiler format."""
 
-    L = data.get("L", 36)
+    L = data["L"]
 
-    # Get single values
-    b_layer = (
-        data["b"][1]
-        if isinstance(data.get("b"), list) and len(data["b"]) > 1
-        else data.get("b_layer", 74711040)
-    )
-    b_in = (
-        data["b_i"][1]
-        if isinstance(data.get("b_i"), list) and len(data["b_i"]) > 1
-        else data.get("b_in", 28672000)
-    )
-    b_out = (
-        data["b_o"][1]
-        if isinstance(data.get("b_o"), list) and len(data["b_o"]) > 1
-        else data.get("b_out", 28672000)
-    )
+    # Get single values from arrays (use first non-zero value at index 1)
+    b_layer = data["b"][1]
+    b_in = data["b_i"][1]
+    b_out = data["b_o"][1]
 
-    # Handle f_q
-    fqd = data.get("f_q")
+    # Handle f_q with new format (decode section with arrays per batch size)
+    fqd = data["f_q"]
     f_q = {}
-    if isinstance(fqd, dict):
-        decode = fqd.get("decode", {}) if isinstance(fqd.get("decode"), dict) else {}
-        if decode:
-            batches = list(decode.keys())
-            for key in batches:
-                if isinstance(decode[key], list) and len(decode[key]) > 1:
-                    f_q[key] = decode[key][1]
-        elif "f_by_quant" in data and data["f_by_quant"]:
-            # Fallback to old format
-            fbq = data["f_by_quant"]
-            if isinstance(fbq, dict) and "decode" in fbq:
-                f_q = {"b_1": fbq["decode"]}
-            else:
-                f_q = {"b_1": fbq}
+    if "decode" in fqd:
+        decode = fqd["decode"]
+        for batch_key in decode.keys():
+            # Each batch key contains an array of values per layer
+            if isinstance(decode[batch_key], list) and len(decode[batch_key]) > 1:
+                # Use the first non-zero value (index 1) as the per-layer FLOP value
+                f_q[batch_key] = decode[batch_key][1]
+    else:
+        raise ValueError("Model profile must include f_q.decode")
 
-    # Handle f_out
-    foutd = data.get("f_out")
+    # Handle f_out with new format (decode section with single values per batch size)
+    foutd = data["f_out"]
     f_out = {}
-    if isinstance(foutd, dict):
-        decode = foutd.get("decode", {}) if isinstance(foutd.get("decode"), dict) else {}
-        if decode:
-            batches = list(decode.keys())
-            for key in batches:
-                f_out[key] = decode[key]
-        elif "f_out_by_quant" in data and data["f_out_by_quant"]:
-            # Fallback to old format
-            foq = data["f_out_by_quant"]
-            if isinstance(foq, dict) and "decode" in foq:
-                f_out = {"b_1": foq["decode"]}
-            else:
-                f_out = {"b_1": foq}
+    if "decode" in foutd:
+        # f_out.decode contains single values per batch size, not arrays
+        f_out = foutd["decode"].copy()
+    else:
+        raise ValueError("Model profile must include f_out.decode")
 
-    # Handle Q (quantization)
-    Q = data.get("quantization", data.get("Q", "Q4_K"))
+    # Get quantization level
+    Q = data["quantization"]
 
     return ModelProfile(
         L=L,
         b_layer=b_layer,
         b_in=b_in,
         b_out=b_out,
-        hk=data.get("hk", 8),
-        ek=data.get("ek", 128),
-        hv=data.get("hv", 8),
-        ev=data.get("ev", 128),
-        n_kv=data.get("n_kv", 40960),
-        e_embed=data.get("e_embed", 2560),
-        V=data.get("V", 151936),
+        hk=data["hk"],
+        ek=data["ek"],
+        hv=data["hv"],
+        ev=data["ev"],
+        n_kv=data["n_kv"],
+        e_embed=data["e_embed"],
+        V=data["V"],
         f_q=f_q,
         f_out=f_out,
         Q=Q,
@@ -800,6 +775,27 @@ def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
         router_bytes=data.get("router_bytes"),
         flops_per_active_expert_per_token=data.get("flops_per_active_expert_per_token"),
     )
+
+
+def load_model_profile_split_from_json_string(json_string: str) -> ModelProfile:
+    """
+    Load ModelProfile from a JSON string in the ModelProfileSplit format.
+
+    This function parses the JSON string containing the new profiler output
+    (ModelProfileSplit format) and converts it to a ModelProfile object.
+
+    Args:
+        json_string: JSON string with ModelProfileSplit format data
+
+    Returns:
+        ModelProfile object
+
+    Example:
+        >>> json_str = '''{"b": [0, 92518400, ...], "f_q": {"decode": {"b_1": [...]}}, ...}'''
+        >>> model = load_model_profile_split_from_json_string(json_str)
+    """
+    data = json.loads(json_string)
+    return load_model_profile_from_dict(data)
 
 
 def main():
