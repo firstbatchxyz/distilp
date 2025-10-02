@@ -269,10 +269,10 @@ def load_model_profile(model_path: str) -> ModelProfile:
     else:
         raise ValueError("Model profile must include f_out.decode")
 
-    # Get quantization list
+    # Get quantization level
     Q = data["quantization"] if "quantization" in data else None
     if not Q:
-        raise ValueError("Model profile must include 'quantization' list")
+        raise ValueError("Model profile must include 'quantization' field")
 
     try:
         return ModelProfile(
@@ -290,6 +290,25 @@ def load_model_profile(model_path: str) -> ModelProfile:
             f_q=f_q,
             f_out=f_out,
             Q=Q,
+            # MoE fields
+            is_moe=data.get("is_moe", False),
+            n_routed_experts=data.get("n_routed_experts", 0),
+            n_shared_experts=data.get("n_shared_experts", 0),
+            experts_per_token=data.get("experts_per_token", 0),
+            moe_intermediate_size=data.get("moe_intermediate_size", 0),
+            moe_layer_freq=data.get("moe_layer_freq", 1),
+            first_k_dense_replace=data.get("first_k_dense_replace", 0),
+            total_moe_layers=data.get("total_moe_layers", 0),
+            moe_layer_indices=data.get("moe_layer_indices"),
+            attn_bytes=data.get("attn_bytes"),
+            bytes_per_expert=data.get("bytes_per_expert"),
+            bytes_shared_experts=data.get("bytes_shared_experts"),
+            attn_flops=data.get("attn_flops"),
+            flops_per_expert=data.get("flops_per_expert"),
+            flops_shared_experts=data.get("flops_shared_experts"),
+            router_flops=data.get("router_flops"),
+            router_bytes=data.get("router_bytes"),
+            flops_per_active_expert_per_token=data.get("flops_per_active_expert_per_token"),
         )
     except Exception as e :
         raise ValueError(f"Error creating ModelProfile: {e}")
@@ -708,57 +727,43 @@ def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
         else data.get("b_out", 28672000)
     )
 
-    # Use f_by_quant if available (support prefill/decode split); fallback from f_q
-    if "f_by_quant" in data and data["f_by_quant"]:
-        fbq = data["f_by_quant"]
-        if isinstance(fbq, dict) and "decode" in fbq:
-            f_by_quant = fbq["decode"]
-        else:
-            f_by_quant = fbq
-    else:
-        # Derive from f_q only if present in new nested format; otherwise, raise
-        fq = data.get("f_q")
-        if isinstance(fq, dict):
-            decode = fq.get("decode", {}) if isinstance(fq.get("decode"), dict) else {}
-            if not decode:
-                raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
-            # Prefer b_1 if available, otherwise smallest batch
-            if "b_1" in decode and isinstance(decode["b_1"], list) and decode["b_1"]:
-                arr = decode["b_1"]
+    # Handle f_q
+    fqd = data.get("f_q")
+    f_q = {}
+    if isinstance(fqd, dict):
+        decode = fqd.get("decode", {}) if isinstance(fqd.get("decode"), dict) else {}
+        if decode:
+            batches = list(decode.keys())
+            for key in batches:
+                if isinstance(decode[key], list) and len(decode[key]) > 1:
+                    f_q[key] = decode[key][1]
+        elif "f_by_quant" in data and data["f_by_quant"]:
+            # Fallback to old format
+            fbq = data["f_by_quant"]
+            if isinstance(fbq, dict) and "decode" in fbq:
+                f_q = {"b_1": fbq["decode"]}
             else:
-                def _batch_num(k: str) -> int:
-                    try:
-                        return int(k.split("_")[1])
-                    except Exception:
-                        return 1_000_000
-                bk = sorted(decode.keys(), key=_batch_num)[0]
-                arr = decode[bk]
-            if not (isinstance(arr, list) and len(arr) > 1):
-                raise ValueError("f_q.decode must provide a non-empty list under a batch key like 'b_1'")
-            nz = next((x for x in arr if isinstance(x, (int, float)) and x > 0), None)
-            f_base = nz if nz is not None else arr[1]
-        else:
-            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode in the new format")
+                f_q = {"b_1": fbq}
 
-        f_by_quant = {
-            "Q4_K": f_base * 0.125,
-            "Q5_K": f_base * 0.156,
-            "Q6_K": f_base * 0.187,
-            "Q8_0": f_base * 0.25,
-            "F16": f_base * 0.5,
-            "F32": f_base,
-        }
+    # Handle f_out
+    foutd = data.get("f_out")
+    f_out = {}
+    if isinstance(foutd, dict):
+        decode = foutd.get("decode", {}) if isinstance(foutd.get("decode"), dict) else {}
+        if decode:
+            batches = list(decode.keys())
+            for key in batches:
+                f_out[key] = decode[key]
+        elif "f_out_by_quant" in data and data["f_out_by_quant"]:
+            # Fallback to old format
+            foq = data["f_out_by_quant"]
+            if isinstance(foq, dict) and "decode" in foq:
+                f_out = {"b_1": foq["decode"]}
+            else:
+                f_out = {"b_1": foq}
 
-    # Use f_out_by_quant if available, otherwise mirror f_by_quant
-    if "f_out_by_quant" in data and data["f_out_by_quant"]:
-        foq = data["f_out_by_quant"]
-        if isinstance(foq, dict) and "decode" in foq:
-            f_out_by_quant = foq["decode"]
-        else:
-            f_out_by_quant = foq
-    else:
-        f_out_by_quant = f_by_quant
-    Q = data.get("Q", ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "F32"])
+    # Handle Q (quantization)
+    Q = data.get("quantization", data.get("Q", "Q4_K"))
 
     return ModelProfile(
         L=L,
@@ -772,9 +777,28 @@ def load_model_profile_from_dict(data: Dict[str, Any]) -> ModelProfile:
         n_kv=data.get("n_kv", 40960),
         e_embed=data.get("e_embed", 2560),
         V=data.get("V", 151936),
-        f_by_quant=f_by_quant,
-        f_out_by_quant=f_out_by_quant,
+        f_q=f_q,
+        f_out=f_out,
         Q=Q,
+        # MoE fields
+        is_moe=data.get("is_moe", False),
+        n_routed_experts=data.get("n_routed_experts", 0),
+        n_shared_experts=data.get("n_shared_experts", 0),
+        experts_per_token=data.get("experts_per_token", 0),
+        moe_intermediate_size=data.get("moe_intermediate_size", 0),
+        moe_layer_freq=data.get("moe_layer_freq", 1),
+        first_k_dense_replace=data.get("first_k_dense_replace", 0),
+        total_moe_layers=data.get("total_moe_layers", 0),
+        moe_layer_indices=data.get("moe_layer_indices"),
+        attn_bytes=data.get("attn_bytes"),
+        bytes_per_expert=data.get("bytes_per_expert"),
+        bytes_shared_experts=data.get("bytes_shared_experts"),
+        attn_flops=data.get("attn_flops"),
+        flops_per_expert=data.get("flops_per_expert"),
+        flops_shared_experts=data.get("flops_shared_experts"),
+        router_flops=data.get("router_flops"),
+        router_bytes=data.get("router_bytes"),
+        flops_per_active_expert_per_token=data.get("flops_per_active_expert_per_token"),
     )
 
 

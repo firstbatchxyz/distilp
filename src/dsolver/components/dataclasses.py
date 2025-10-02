@@ -82,4 +82,28 @@ class ModelProfile:
     # FLOPs per layer per batch_size, and for the output layer:
     f_q: Dict[str, QuantPerf]  # (batch_size, f_q) (per "typical" layer), per batch size
     f_out: Dict[str, QuantPerf]  # (batch_size,f_{q, out})   (for output layer)
-    Q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"] # Model quantization level
+    Q: str  # Model quantization level (e.g., "Q4_K", "MXFP4", etc.)
+
+    # Optional MoE-specific fields
+    is_moe: bool = False  # Whether model uses Mixture of Experts
+    n_routed_experts: int = 0  # Number of routed experts
+    n_shared_experts: int = 0  # Number of shared experts
+    experts_per_token: int = 0  # Number of experts activated per token
+    moe_intermediate_size: int = 0  # MoE intermediate size
+    moe_layer_freq: int = 1  # Frequency of MoE layers
+    first_k_dense_replace: int = 0  # Number of dense layers before MoE
+    total_moe_layers: int = 0  # Total number of MoE layers
+    moe_layer_indices: Optional[list] = None  # Indices of MoE layers
+
+    # Optional per-layer byte metrics (for MoE models)
+    attn_bytes: Optional[list] = None  # Attention bytes per layer
+    bytes_per_expert: Optional[Dict[str, int]] = None  # Bytes per expert per layer
+    bytes_shared_experts: Optional[Dict[str, int]] = None  # Bytes for shared experts
+
+    # Optional per-layer FLOP metrics (for MoE models)
+    attn_flops: Optional[Dict[str, Dict[str, list]]] = None  # Attention FLOPs (prefill/decode)
+    flops_per_expert: Optional[Dict[str, int]] = None  # FLOPs per expert per layer
+    flops_shared_experts: Optional[Dict[str, int]] = None  # FLOPs for shared experts
+    router_flops: Optional[Dict[str, int]] = None  # Router FLOPs per layer
+    router_bytes: Optional[Dict[str, int]] = None  # Router bytes per layer
+    flops_per_active_expert_per_token: Optional[Dict[str, int]] = None  # Active expert FLOPs
