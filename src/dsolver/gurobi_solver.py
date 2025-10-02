@@ -187,7 +187,6 @@ def classify_device_case(
     else:
         return 3
 
-
 def assign_sets(
     devs: List[DeviceProfile],
 ) -> Dict[str, List[int]]:
@@ -305,9 +304,6 @@ def objective_vectors(
         elif i in sets["M3"]:
             a[i] = alpha
             b[i] = beta
-        else:  # M4
-            a[i] = alpha
-            b[i] = beta
     return a, b
 
 @dataclass
@@ -341,7 +337,7 @@ def gurobi_solve(
     for u, nbrs in transitions.items():
         if u[1] != -1:
             for v, p in nbrs.items():
-                f = pi.get(u[0], u[1]) * float(p)
+                f = pi[u[0], u[1]] * float(p)
                 if f > 0.0:
                     edges.append((u, v, f))
 
