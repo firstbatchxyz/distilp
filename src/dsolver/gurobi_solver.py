@@ -12,10 +12,15 @@ References to the paper (prima.cpp / Halda):
 """
 
 from __future__ import annotations
+from typing import Sequence
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Iterable, Tuple, Literal
+from typing import Dict, List, Optional, Iterable, Tuple
 from collections import defaultdict
-import math
+
 import json
 import re
 import gurobipy as gp
@@ -240,9 +245,9 @@ def alpha_beta(
     # bprime = b_prime(model)
     # α_m (CPU path)
     req_flops_by_router = model.router_flops["1"]
-    req_flops_by_attention = model.attn_flops["decode"]["b1"][0]
-    req_flops_by_expert = model.flops_per_active_expert_per_token[0]
-    flops_by_device_cpu = dev.scpu["fp16"]["b_1"]
+    req_flops_by_attention = model.attn_flops["decode"]["b_1"][0]
+    req_flops_by_expert = model.flops_per_active_expert_per_token["1"]
+    flops_by_device_cpu = dev.scpu["F16"]["b_1"]
 
     # comp_cpu = _sum_f_over_S(model.f_by_quant, dev.scpu, model.Q)
     comp_cpu = (req_flops_by_expert + req_flops_by_router + req_flops_by_attention)/flops_by_device_cpu
@@ -253,7 +258,7 @@ def alpha_beta(
     S_gpu = _gpu_table(dev)
     T_gpu = _pick_T_gpu(dev)
     if S_gpu is not None and T_gpu is not None:
-        flops_by_device_gpu = S_gpu["fp16"]["b_1"]
+        flops_by_device_gpu = S_gpu["F16"]["b_1"]
         # comp_gpu = _sum_f_over_S(model.f_by_quant, S_gpu, model.Q)
         comp_gpu = (req_flops_by_expert+req_flops_by_router+req_flops_by_attention)/flops_by_device_gpu
         beta = (
@@ -306,27 +311,184 @@ def objective_vectors(
             b[i] = beta
     return a, b
 
+
 @dataclass
-class ILPResult:
+class MINLPResult:
     x: List[int]
     g: List[int]
     r: List[int]
     obj_value: float
 
+# --- Visualization helper ----------------------------------------------------
+# Discrete heatmap (E x L) colored by device and intensity (x darkest, g middle,
+# r lightest). Uses the variable ordering used in x_index_list: (d, l, e).
+
+
+
+def _shade_rgb(rgb: Sequence[float], factor: float) -> tuple[float, float, float]:
+    """
+    Blend rgb toward white by `factor` in [0,1]. factor=0 -> original (darkest),
+    larger factor -> lighter. We ensure values stay in [0,1].
+    """
+    r, g, b = rgb[:3]
+    return (
+        1.0 - (1.0 - r) * (1.0 - factor),
+        1.0 - (1.0 - g) * (1.0 - factor),
+        1.0 - (1.0 - b) * (1.0 - factor),
+    )
+
+
+def plot_solution_heatmap(
+    result: MINLPResult,
+    E: int,
+    L: int,
+    M: int,
+    title: str | None = None,
+    show_legend: bool = True,
+):
+    """
+    Plot an E x L heatmap summarizing the ILP solution.
+
+    Coloring rule (per cell e,l):
+      - Choose device d and intensity by priority x > g > r.
+      - For that (e,l), if any x[e,l,d]==1 for some d, use that device's color (darkest).
+        Else if any g[e,l,d]==1, use same device color (medium).
+        Else if any r[e,l,d]==1, use same device color (lightest).
+        If multiple devices tie within a level, the smallest d is used.
+      - Cells with no assignment remain blank.
+
+    Discrete colors: each device has its own hue; intensity encodes x/g/r.
+
+    Parameters
+    ----------
+    result : ILPResult (with x, g, r as flat lists in (d,l,e) order)
+    E, L, M : problem sizes
+    title : optional title for the plot
+    show_legend : whether to draw a legend mapping devices and intensities
+    """
+    # Rebuild 3-D arrays with index order (e, l, d) for convenience
+    x3 = np.zeros((E, L, M), dtype=int)
+    g3 = np.zeros((E, L, M), dtype=int)
+    r3 = np.zeros((E, L, M), dtype=int)
+
+    pos = 0
+    for d in range(M):
+        for l in range(L):
+            for e in range(E):
+                x3[e, l, d] = int(result.x[pos])
+                r3[e, l, d] = int(result.r[pos])
+                g3[e, l, d] = int(result.g[pos])
+                pos += 1
+
+    # Build E x L matrix of discrete codes: code = 3*d + level (0=r lightest, 1=g, 2=x darkest)
+    codes = -np.ones((E, L), dtype=int)
+    for e in range(E):
+        for l in range(L):
+            # Priority X > G > R
+            ds = np.where(x3[e, l, :] == 1)[0]
+            if ds.size > 0:
+                d = int(ds.min())
+                codes[e, l] = 3 * d + 2  # darkest
+                continue
+            ds = np.where(g3[e, l, :] == 1)[0]
+            if ds.size > 0:
+                d = int(ds.min())
+                codes[e, l] = 3 * d + 1  # medium
+                continue
+            ds = np.where(r3[e, l, :] == 1)[0]
+            if ds.size > 0:
+                d = int(ds.min())
+                codes[e, l] = 3 * d + 0  # lightest
+                continue
+            # else remains -1 (unassigned)
+
+    # Build a discrete ListedColormap: 3 shades per device (lightest for r, mid for g, darkest for x)
+    base = plt.cm.tab10(np.linspace(0, 1, max(M, 3)))  # RGBA
+    light_f, mid_f, dark_f = 0.85, 0.45, 0.2
+
+    colors: list[tuple[float, float, float]] = []
+    for d in range(M):
+        rgb = tuple(base[d % len(base)][:3])
+        # Order of levels must match codes above: 0=r (light), 1=g (mid), 2=x (dark)
+        colors.append(_shade_rgb(rgb, light_f))  # r
+        colors.append(_shade_rgb(rgb, mid_f))    # g
+        colors.append(_shade_rgb(rgb, dark_f))   # x
+
+    cmap = ListedColormap(colors, name="dev_xgr")
+
+    # Mask unassigned
+    masked = np.ma.masked_where(codes < 0, codes)
+
+    # Figure size scaled to problem; keep sane bounds
+    fig_w = max(6.0, L * 0.35)
+    fig_h = max(4.0, E * 0.35)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    im = ax.imshow(masked, origin="lower", interpolation="nearest", aspect="auto", cmap=cmap)
+
+    ax.set_xlabel("Layer (l)")
+    ax.set_ylabel("Expert (e)")
+    ax.set_xticks(np.arange(L))
+    ax.set_yticks(np.arange(E))
+
+    if title:
+        ax.set_title(title)
+    else:
+        our_title = "MOE allocation with average latency: " + str(round(result.obj_value, 6)) + "s"
+        ax.set_title(our_title)
+
+    # Build a compact legend
+    if show_legend:
+        import matplotlib.patches as mpatches
+        legend_handles = []
+        for d in range(M):
+            rgb = base[d % len(base)][:3]
+            # show the three intensities for this device
+            legend_handles.append(
+                mpatches.Patch(color=_shade_rgb(rgb, 0.2), label=f"D{d}: CPU")
+            )
+            legend_handles.append(
+                mpatches.Patch(color=_shade_rgb(rgb, 0.45), label=f"D{d}: GPU")
+            )
+            legend_handles.append(
+                mpatches.Patch(color=_shade_rgb(rgb, 0.85), label=f"D{d}: Disk")
+            )
+        # To avoid overly large legends, collapse if too many devices
+        if len(legend_handles) > 24:
+            # Show only device IDs (dark patch) and a separate shade key
+            legend_handles = []
+            for d in range(M):
+                rgb = base[d % len(base)][:3]
+                legend_handles.append(
+                    mpatches.Patch(color=_shade_rgb(rgb, 0.2), label=f"D{d}")
+                )
+            shade_handles = [
+                mpatches.Patch(color=(0.2, 0.2, 0.2), label="x (dark)"),
+                mpatches.Patch(color=(0.45, 0.45, 0.45), label="g (mid)"),
+                mpatches.Patch(color=(0.85, 0.85, 0.85), label="r (light)"),
+            ]
+            ax.legend(handles=legend_handles[:10] + shade_handles, ncol=4, fontsize=8, loc="upper right")
+        else:
+            ax.legend(handles=legend_handles, ncol=min(6, 3 * M), fontsize=8, loc="upper right")
+
+    plt.tight_layout()
+    return fig, ax
+
 def gurobi_solve(
     path: str,
     devs: List[DeviceProfile],
     model: ModelProfile,
-)-> ILPResult:
+    mip_gap: float = 0.0005,
+    time_limit: float = 120.0,
+)-> MINLPResult:
     M = len(devs)
     L = model.L
     E = model.n_routed_experts
-
+    # E = 20
     sets = assign_sets(devs)
     kv_cache_size = kv_size(model)
     router_size = model.router_bytes["1"]
     expert_size = model.bytes_per_expert["1"]
-    attention_size = model.attn_bytes["1"]
+    attention_size = model.attn_bytes[0]
 
     alpha, beta = objective_vectors(devs, model, sets)
 
@@ -337,9 +499,10 @@ def gurobi_solve(
     for u, nbrs in transitions.items():
         if u[1] != -1:
             for v, p in nbrs.items():
-                f = pi[u[0], u[1]] * float(p)
-                if f > 0.0:
-                    edges.append((u, v, f))
+                # if u[0] <=E-1 and v[0]<=E-1:
+                    f = pi[u[0], u[1]] * float(p)
+                    if f > 0.0:
+                        edges.append((u, v, f))
 
     x_index_list = []
     for d in range(M):
@@ -349,56 +512,66 @@ def gurobi_solve(
 
     m = gp.Model("MoeDelo")
 
+    # Add termination criterion for Gurobi
+    m.Params.TimeLimit = time_limit
+    m.Params.MIPGap = mip_gap
+
     # Decision variables
 
-    x = m.addVars(x_index_list, vtype=GRB.BINARY, name="x")  # resident in RAM
-    y = m.addVars(x_index_list, vtype=GRB.BINARY, name="y")  # executed on
-    r = m.addVars(x_index_list, vtype=GRB.BINARY, name="r")  # disk-load if not resident
+    x = m.addVars(x_index_list, vtype=GRB.BINARY, name="x")  # executed on CPU
+    y = m.addVars(x_index_list, vtype=GRB.BINARY, name="y")  # resident in device
+    # r = m.addVars(x_index_list, vtype=GRB.BINARY, name="r")  # disk-load if not in RAM
     g = m.addVars(x_index_list, vtype=GRB.BINARY, name="g")  # executed on GPU
-    z = m.addVars(L, M, vtype=GRB.BINARY, name="z")     # layer at device
+    zc = m.addVars(L, M, vtype=GRB.BINARY, name="z")     # layer at device ram
+    zg = m.addVars(L, M, vtype=GRB.BINARY, name="z")  # layer at device vram
 
-    # One execution device per expert
+    # Each expert have to be executed in at least one device
     for l in range(L):
         for e in range(E):
             m.addConstr(gp.quicksum(y[e, l, d] for d in range(M)) >= 1, name=f"exec_unique[{e}]")
 
-    # Disk load linking
-    for l in range(L):
-        for e in range(E):
-            for d in range(M):
-                m.addConstr(r[e, l, d] >= y[e, l, d] - x[e, l, d], name=f"r_lb[{e},{l},{d}]")
-                m.addConstr(r[e, l, d] <= y[e, l, d], name=f"r_ub[{e},{l},{d}]")
+    # # Disk load linking
+    # for l in range(L):
+    #     for e in range(E):
+    #         for d in range(M):
+    #             m.addConstr(r[e, l, d] >= y[e, l, d] - x[e, l, d] - g[e, l, d], name=f"r_lb[{e},{l},{d}]")
+    #             m.addConstr(r[e, l, d] <= y[e, l, d], name=f"r_ub[{e},{l},{d}]")
 
-    # Layer-Device assignment
+    # Layer-DeviceRAM assignment
     for l in range(L):
         for d in range(M):
-            m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * z[l,d], name=f"layer_allocation[{l},{d}]")
+            m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * zc[l,d], name=f"layer_allocation[{l},{d}]")
 
-    # CPU linking
+    # Layer-DeviceVRAM assignment
+    for l in range(L):
+        for d in range(M):
+            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E)) <= E * zg[l,d], name=f"layer_allocation[{l},{d}]")
+
+    # CPU and GPU linking
     for l in range(L):
         for e in range(E):
             for d in range(M):
-                m.addConstr(x[e, l, d] <= y[e, l, d], name=f"g_le_x[{e},{l},{d}]")
+                m.addConstr(x[e, l, d] + g[e, l, d]  <= y[e, l, d], name=f"g_le_x[{e},{l},{d}]")
 
-    # GPU linking
-    for l in range(L):
-        for e in range(E):
-            for d in range(M):
-                m.addConstr(g[e, l, d] <= y[e, l, d], name=f"g_le_y[{e},{l},{d}]")
+    # # GPU linking
+    # for l in range(L):
+    #     for e in range(E):
+    #         for d in range(M):
+    #             m.addConstr(g[e, l, d] <= y[e, l, d], name=f"g_le_y[{e},{l},{d}]")
 
     # RAM constraints
     for d in sets["M1"]:
         rhs = devs[d].d_avail_ram
         m.addConstr(
             gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M1_ram[{d}]")
+                zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M1_ram[{d}]")
 
     for d in sets["M2"]:
         dev_metal = float(devs[d].d_avail_metal or 0)
         rhs = dev_metal - devs[d].c_gpu
         m.addConstr(
             gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M2_ram[{d}]")
+                zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M2_ram[{d}]")
 
     # VRAM
     for d in range(M):
@@ -411,7 +584,7 @@ def gurobi_solve(
         if i.has_metal and i.d_avail_metal is not None:
             rhs = i.d_avail_metal - i.c_gpu
             m.addConstr(gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                z[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"metal_shared[{i}]")
+                zg[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"metal_shared[{d}]")
 
     # No GPU
     for d in range(M):
@@ -421,19 +594,19 @@ def gurobi_solve(
             m.addConstr(gp.quicksum(g[e, l, d] for e in range(E) for l in range(L)) == 0, name=f"no_gpu[{d}]")
 
     # Comm linearization
-    w = {}
-    for (u, v, _) in edges:
-        for d1 in range(M):
-            for d2 in  range(M):
-                w[(u[0], v[0], u[1], v[1], d1, d2)] = m.addVar(lb=0.0, ub=1.0, vtype=GRB.CONTINUOUS,
-                                                 name=f"w[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
-                # Full McCormick (tight) is 3 constraints:
-                m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] <= y[u[0], u[1], d1],
-                            name=f"w_le_yu[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
-                m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] <= y[v[0], v[1], d2],
-                            name=f"w_le_yv[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
-                m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] >= y[u[0], u[1], d1] + y[v[0], v[1], d2] - 1,
-                            name=f"w_ge_sum-1[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
+    # w = {}
+    # for (u, v, _) in edges:
+    #     for d1 in range(M):
+    #         for d2 in  range(M):
+    #             w[(u[0], v[0], u[1], v[1], d1, d2)] = m.addVar(lb=0.0, ub=1.0, vtype=GRB.CONTINUOUS,
+    #                                              name=f"w[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
+    #             # Full McCormick (tight) is 3 constraints:
+    #             m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] <= y[u[0], u[1], d1],
+    #                         name=f"w_le_yu[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
+    #             m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] <= y[v[0], v[1], d2],
+    #                         name=f"w_le_yv[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
+    #             m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] >= y[u[0], u[1], d1] + y[v[0], v[1], d2] - 1,
+    #                         name=f"w_ge_sum-1[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
 
     m.update()
 
@@ -444,13 +617,17 @@ def gurobi_solve(
         for l in range(L) for e in range(E) for d in range(M))
 
 
+    # comm_cost = gp.quicksum(
+    #     flow * 0.02 * w[(u[0], v[0], u[1], v[1], d1, d2)]
+    #     for (u, v, flow) in edges for d1 in range(M) for d2 in range(M)
+    # )
+
     comm_cost = gp.quicksum(
-        flow * 0.02 * w[(u[0], v[0], u[1], v[1], d1, d2)]
+        flow * 0.02 * (1- y[u[0], u[1], d1] * y[v[0], v[1], d2] )
         for (u, v, flow) in edges for d1 in range(M) for d2 in range(M)
     )
-
     load_cost = gp.quicksum(
-        pi[e, l] * (expert_size/devs[d].s_disk) * r[e, l, d] for e in range(E) for l in range(L) for d in (M))
+        pi[e, l] * (expert_size/devs[d].s_disk) * (y[e, l, d] - x[e, l, d] - g[e, l, d]) for e in range(E) for l in range(L) for d in range(M))
 
     m.setObjective(compute_cost + comm_cost + load_cost, GRB.MINIMIZE)
 
@@ -461,12 +638,16 @@ def gurobi_solve(
         raise RuntimeError(f"Gurobi status {m.status}.")
 
     x_sol = [int(round(x[i].X)) for i in x_index_list]
-    r_sol = [int(round(r[i].X)) for i in x_index_list]
     g_sol = [int(round(g[i].X)) for i in x_index_list]
+    r_sol = [1 if x[i].X + g[i].X < y[i].X else 0  for i in x_index_list]
 
     for i in m.getVars():
-        if i.X > 0:
+        if i.X > 0 and ("x" in i.varName or "r" in i.varName or "g" in i.varName):
             print(i.varName, i.X)
 
-    return ILPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=float(m.ObjVal))
+    result = MINLPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=float(m.ObjVal))
+    fig, ax = plot_solution_heatmap(result, E=E, L=L, M=M)
+    plt.show()
+
+    return result
 

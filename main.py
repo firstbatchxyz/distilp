@@ -31,7 +31,7 @@ except Exception:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    # from src.dsolver.gurobi_solver import halda_solve
+    from src.dsolver.gurobi_solver import gurobi_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
@@ -149,8 +149,8 @@ Examples:
     solver_group.add_argument(
         "--time-limit",
         type=float,
-        default=5.0,
-        help="Time limit per k value in seconds (default: 5.0)",
+        default=120,
+        help="Time limit for Gurobi in seconds (default: 120.0)",
     )
     solver_group.add_argument(
         "--max-iters",
@@ -159,7 +159,7 @@ Examples:
         help="Maximum outer iterations (default: 50)",
     )
     solver_group.add_argument(
-        "--mip-gap", type=float, default=1e-4, help="MIP gap tolerance (default: 1e-4)"
+        "--mip-gap", type=float, default=0.0005, help="MIP gap tolerance (default: %0.05)"
     )
     solver_group.add_argument(
         "--sdisk-threshold",
@@ -225,8 +225,8 @@ Examples:
             model,
             # sdisk_threshold=args.sdisk_threshold,
             # k_candidates=args.k_candidates,
-            # time_limit_per_k=args.time_limit,
-            # mip_gap=args.mip_gap,
+            time_limit=args.time_limit,
+            mip_gap=args.mip_gap,
             # max_outer_iters=args.max_iters,
             # plot=not args.no_plot,
         )
@@ -237,8 +237,8 @@ Examples:
             print(f"obj={result.obj_value:.6f}")
             for exp, layer, dev, val in zip(devices, result.y):
                 print(f"{exp}, {layer}, {dev.name}: {val}")
-        else:
-            print_solution(result, devices)
+        # else:
+        #     print_solution(result, devices)
 
         # Save solution if requested
         if args.save_solution:
