@@ -634,7 +634,7 @@ def gurobi_solve(
 
     # Objective components
     compute_cost = gp.quicksum(
-        pi[e, l] * ((g[e, l, d] * beta[d]) + (y[e, l, d] - g[e, l, d]) * alpha[d])
+        pi[e, l] * ((g[e, l, d] * beta[d]) + (y[e, l, d]- g[e, l, d]- x[e, l, d])* alpha[d]) + alpha[d] * x[e, l, d]
         for l in range(L) for e in range(E) for d in range(M))
 
     # comm_cost = gp.quicksum(
@@ -792,7 +792,7 @@ def gurobi_solve_benders(
 
     # Objective: compute + load + sum theta
     compute_cost_expr = gp.quicksum(
-        pi[e, l] * (g[e, l, d] * beta_vec[d] + (y[e, l, d]-g[e, l, d]) * alpha_vec[d])
+        pi[e, l] * (g[e, l, d] * beta_vec[d] + (y[e, l, d]- g[e, l, d]- x[e, l, d])* alpha_vec[d]) + alpha_vec[d] * x[e, l, d]
         for l in range(L) for e in range(E) for d in range(M)
     )
     load_cost_expr = gp.quicksum(
@@ -880,7 +880,7 @@ def gurobi_solve_benders(
         for l in range(L):
             for e in range(E):
                 pi_el = pi.get((e, l), 0.0)
-                comp_val += pi_el * (g[e, l, d].X * beta_vec[d] + (y[e, l, d].X - g[e, l, d].X )* alpha_vec[d])
+                comp_val += pi_el * (g[e, l, d].X * beta_vec[d] + (y[e, l, d].X - g[e, l, d].X - x[e, l, d].X)* alpha_vec[d]) + alpha_vec[d] * x[e, l, d].X
                 load_val += pi_el * (expert_size / (devs[d].s_disk if devs[d].s_disk else 1.0)) * (y[e, l, d].X - x[e, l, d].X - g[e, l, d].X)
     obj_full = comp_val + load_val + comm_value_full(y_val)
     print(obj_full)
