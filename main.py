@@ -20,7 +20,7 @@ try:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import gurobi_solve
+    from src.dsolver.gurobi_solver import gurobi_solve,gurobi_solve_benders
 except Exception:
     # Script-style fallback
     from src.dsolver.components.gurobi_loader import (
@@ -31,7 +31,7 @@ except Exception:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import gurobi_solve
+    from src.dsolver.gurobi_solver import gurobi_solve,gurobi_solve_benders
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:

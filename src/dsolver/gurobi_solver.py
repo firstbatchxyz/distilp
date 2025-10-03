@@ -16,6 +16,8 @@ from typing import Sequence
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import ListedColormap
+from matplotlib import colors as mcolors
+import matplotlib as mpl
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Iterable, Tuple
@@ -402,8 +404,27 @@ def plot_solution_heatmap(
                 continue
             # else remains -1 (unassigned)
 
-    # Build a discrete ListedColormap: 3 shades per device (lightest for r, mid for g, darkest for x)
-    base = plt.cm.tab10(np.linspace(0, 1, max(M, 3)))  # RGBA
+    # High-contrast categorical palette for devices
+    HC_COLORS = [
+        # ColorBrewer Set1 (9)
+        "#e41a1c", "#377eb8", "#4daf4a", "#984ea3", "#ff7f00",
+        "#ffff33", "#a65628", "#f781bf", "#999999",
+        # Dark2 (8)
+        "#1b9e77", "#d95f02", "#7570b3", "#e7298a",
+        "#66a61e", "#e6ab02", "#a6761d", "#666666",
+        # Set2 (8)
+        "#66c2a5", "#fc8d62", "#8da0cb", "#e78ac3",
+        "#a6d854", "#ffd92f", "#e5c494", "#b3b3b3",
+    ]
+
+    if M <= len(HC_COLORS):
+        base = np.array([mcolors.to_rgb(c) for c in HC_COLORS[:M]])
+    else:
+        # Fallback for many devices: evenly spaced hues in HSV
+        base = np.array([
+            mpl.colors.hsv_to_rgb((h, 0.75, 0.95))
+            for h in np.linspace(0, 1, M, endpoint=False)
+        ])
     light_f, mid_f, dark_f = 0.85, 0.45, 0.2
 
     colors: list[tuple[float, float, float]] = []
@@ -515,15 +536,15 @@ def gurobi_solve(
     # Add termination criterion for Gurobi
     m.Params.TimeLimit = time_limit
     m.Params.MIPGap = mip_gap
-
+    # m.Params.LogToConsole = False
     # Decision variables
 
     x = m.addVars(x_index_list, vtype=GRB.BINARY, name="x")  # executed on CPU
     y = m.addVars(x_index_list, vtype=GRB.BINARY, name="y")  # resident in device
     # r = m.addVars(x_index_list, vtype=GRB.BINARY, name="r")  # disk-load if not in RAM
     g = m.addVars(x_index_list, vtype=GRB.BINARY, name="g")  # executed on GPU
-    zc = m.addVars(L, M, vtype=GRB.BINARY, name="z")     # layer at device ram
-    zg = m.addVars(L, M, vtype=GRB.BINARY, name="z")  # layer at device vram
+    zc = m.addVars(L, M, vtype=GRB.BINARY, name="zc")     # layer at device ram
+    zg = m.addVars(L, M, vtype=GRB.BINARY, name="zg")  # layer at device vram
 
     # Each expert have to be executed in at least one device
     for l in range(L):
@@ -593,7 +614,7 @@ def gurobi_solve(
         if not (has_cuda or has_metal):
             m.addConstr(gp.quicksum(g[e, l, d] for e in range(E) for l in range(L)) == 0, name=f"no_gpu[{d}]")
 
-    # Comm linearization
+    # #Comm linearization
     # w = {}
     # for (u, v, _) in edges:
     #     for d1 in range(M):
@@ -608,7 +629,7 @@ def gurobi_solve(
     #             m.addConstr(w[(u[0], v[0], u[1], v[1], d1, d2)] >= y[u[0], u[1], d1] + y[v[0], v[1], d2] - 1,
     #                         name=f"w_ge_sum-1[{u[0]},{v[0]},{u[1]},{v[1]}, {d1},{d2}]")
 
-    m.update()
+    # m.update()
 
 
     # Objective components
@@ -616,16 +637,17 @@ def gurobi_solve(
         pi[e, l] * ((g[e, l, d] * beta[d]) + (y[e, l, d] - g[e, l, d]) * alpha[d])
         for l in range(L) for e in range(E) for d in range(M))
 
-
     # comm_cost = gp.quicksum(
-    #     flow * 0.02 * w[(u[0], v[0], u[1], v[1], d1, d2)]
+    #     flow * 0.002 * w[(u[0], v[0], u[1], v[1], d1, d2)]
     #     for (u, v, flow) in edges for d1 in range(M) for d2 in range(M)
     # )
 
     comm_cost = gp.quicksum(
-        flow * 0.02 * (1- y[u[0], u[1], d1] * y[v[0], v[1], d2] )
+        flow * 0.02 * (y[u[0], u[1], d1] * y[v[0], v[1], d2] )
         for (u, v, flow) in edges for d1 in range(M) for d2 in range(M)
     )
+
+
     load_cost = gp.quicksum(
         pi[e, l] * (expert_size/devs[d].s_disk) * (y[e, l, d] - x[e, l, d] - g[e, l, d]) for e in range(E) for l in range(L) for d in range(M))
 
@@ -642,7 +664,7 @@ def gurobi_solve(
     r_sol = [1 if x[i].X + g[i].X < y[i].X else 0  for i in x_index_list]
 
     for i in m.getVars():
-        if i.X > 0 and ("x" in i.varName or "r" in i.varName or "g" in i.varName):
+        if i.X > 0 and ("x" in i.varName or "g" in i.varName or "w" in i.varName):
             print(i.varName, i.X)
 
     result = MINLPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=float(m.ObjVal))
@@ -650,4 +672,228 @@ def gurobi_solve(
     plt.show()
 
     return result
+
+
+# -------------------- Benders decomposition solver --------------------
+def gurobi_solve_benders(
+    path: str,
+    devs: List[DeviceProfile],
+    model: ModelProfile,
+    mip_gap: float = 0.0005,
+    time_limit: float = 120.0,
+)-> MINLPResult:
+    """
+    Benders decomposition for the communication term.
+    Master keeps (x,y,g,zc,zg) and per-edge theta variables; a user-cut callback
+    adds optimality cuts derived from the dual of the per-edge LP that maximizes co-location.
+    """
+    import time
+    M = len(devs)
+    L = model.L
+    E = model.n_routed_experts
+    sets = assign_sets(devs)
+    kv_cache_size = kv_size(model)
+    router_size = model.router_bytes["1"]
+    expert_size = model.bytes_per_expert["1"]
+    attention_size = model.attn_bytes[0]
+
+    alpha_vec, beta_vec = objective_vectors(devs, model, sets)
+
+    transitions, layers = load_transitions(path)
+    pi = compute_visit_probabilities(transitions, layers)
+
+    # Build edges with nonzero flow
+    edges: List[Tuple[Node, Node, float]] = []
+    for u, nbrs in transitions.items():
+        if u[1] != -1:
+            for v, p in nbrs.items():
+                f = pi.get((u[0], u[1]), 0.0) * float(p)
+                if f > 0.0:
+                    edges.append((u, v, f))
+
+    COMM_COEFF = 0.02
+
+    # Index list in (e,l,d)
+    x_index_list = []
+    for d in range(M):
+        for l in range(L):
+            for e in range(E):
+                x_index_list.append((e, l, d))
+
+    # Master model
+    m = gp.Model("MoeDelo_Benders")
+    m.Params.MIPGap = mip_gap
+    m.Params.TimeLimit = time_limit
+    m.Params.PreCrush = 1      # needed to cut at node relaxation
+    m.Params.Cuts = 2
+
+    x = m.addVars(x_index_list, vtype=GRB.BINARY, name="x")
+    y = m.addVars(x_index_list, vtype=GRB.BINARY, name="y")
+    g = m.addVars(x_index_list, vtype=GRB.BINARY, name="g")
+    zc = m.addVars(L, M, vtype=GRB.BINARY, name="zc")
+    zg = m.addVars(L, M, vtype=GRB.BINARY, name="zg")
+
+    # Per-edge comm placeholder
+    theta = {}
+    for (u, v, f) in edges:
+        theta[(u, v)] = m.addVar(lb=0.0, name=f"theta[{u[0]},{u[1]}->{v[0]},{v[1]}]")
+
+    # Residency: each (e,l) resident on >=1 device
+    for l in range(L):
+        for e in range(E):
+            m.addConstr(gp.quicksum(y[e, l, d] for d in range(M)) >= 1, name=f"resident[{e},{l}]")
+
+    # Link z with x/g
+    for l in range(L):
+        for d in range(M):
+            m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * zc[l, d], name=f"zc_link[{l},{d}]")
+            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E)) <= E * zg[l, d], name=f"zg_link[{l},{d}]")
+
+    # Execute only if resident
+    for l in range(L):
+        for e in range(E):
+            for d in range(M):
+                m.addConstr(x[e, l, d] + g[e, l, d] <= y[e, l, d], name=f"exec_le_res[{e},{l},{d}]")
+
+    # RAM CPU constraints
+    for d in sets["M1"]:
+        rhs = devs[d].d_avail_ram
+        m.addConstr(
+            gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E))
+            <= rhs - gp.quicksum(zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
+            name=f"M1_ram[{d}]"
+        )
+    for d in sets["M2"]:
+        dev_metal = float(devs[d].d_avail_metal or 0)
+        rhs = dev_metal - devs[d].c_gpu
+        m.addConstr(
+            gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E))
+            <= rhs - gp.quicksum(zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
+            name=f"M2_ram[{d}]"
+        )
+
+    # VRAM / shared memory constraints
+    for d in range(M):
+        i = devs[d]
+        if i.has_metal and i.d_avail_metal is not None:
+            rhs = i.d_avail_metal - i.c_gpu
+            m.addConstr(
+                gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E))
+                <= rhs - gp.quicksum(zg[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
+                name=f"metal_shared[{d}]"
+            )
+
+    # No-GPU devices
+    for d in range(M):
+        has_cuda = bool(devs[d].has_cuda and devs[d].d_avail_cuda is not None)
+        has_metal = bool(devs[d].has_metal and devs[d].d_avail_metal is not None)
+        if not (has_cuda or has_metal):
+            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E) for l in range(L)) == 0, name=f"no_gpu[{d}]")
+
+    # Objective: compute + load + sum theta
+    compute_cost_expr = gp.quicksum(
+        pi[e, l] * (g[e, l, d] * beta_vec[d] + (y[e, l, d]-g[e, l, d]) * alpha_vec[d])
+        for l in range(L) for e in range(E) for d in range(M)
+    )
+    load_cost_expr = gp.quicksum(
+        pi[e, l] * (expert_size / (devs[d].s_disk if devs[d].s_disk else 1.0)) * (y[e, l, d] - x[e, l, d] - g[e, l, d])
+        for e in range(E) for l in range(L) for d in range(M)
+    )
+    theta_sum = gp.quicksum(theta[(u, v)] for (u, v, _) in edges)
+    m.setObjective(compute_cost_expr + load_cost_expr + theta_sum, GRB.MINIMIZE)
+
+    m.update()
+
+    # ---------- Benders user-cut callback ----------
+    def benders_cb(model, where):
+        if where != GRB.Callback.MIPNODE:
+            return
+        status = model.cbGet(GRB.Callback.MIPNODE_STATUS)
+        if status != GRB.OPTIMAL:
+            return
+        # Read y and theta values at node relaxation
+        y_rel = {}
+        for (e, l, d) in x_index_list:
+            y_rel[(e, l, d)] = model.cbGetNodeRel(y[e, l, d])
+        theta_rel = {}
+        for (u, v, _) in edges:
+            theta_rel[(u, v)] = model.cbGetNodeRel(theta[(u, v)])
+
+        eps = 1e-7
+        cuts_added = 0
+        for (u, v, f) in edges:
+            # compute S = sum_d min(y_u_d, y_v_d)
+            S = 0.0
+            y_u = [y_rel[(u[0], u[1], d)] for d in range(M)]
+            y_v = [y_rel[(v[0], v[1], d)] for d in range(M)]
+            mins = [min(y_u[d], y_v[d]) for d in range(M)]
+            S = sum(mins)
+            if S >= 1.0 - 1e-9:
+                continue  # trivial bound theta >= 0 is enough
+            rhs_value = f * COMM_COEFF * (1.0 - S)
+            lhs_value = theta_rel[(u, v)]
+            if lhs_value >= rhs_value - eps:
+                continue  # not violated
+
+            # Build linear cut using a dual extreme point:
+            # gamma = 0, for each d choose alpha_d=1 if y_u_d <= y_v_d else beta_d=1
+            expr_rhs = 1.0
+            cut = theta[(u, v)]
+            # subtract F*c * (sum alpha*y_u + sum beta*y_v + gamma)
+            lin = gp.LinExpr()
+            for d in range(M):
+                if y_u[d] <= y_v[d]:
+                    lin.addTerms(1.0, y[u[0], u[1], d])
+                else:
+                    lin.addTerms(1.0, y[v[0], v[1], d])
+            # theta >= f*c * (1 - lin)
+            model.cbCut(cut >= f * COMM_COEFF * (expr_rhs - lin))
+            cuts_added += 1
+
+    m.optimize(benders_cb)
+
+    if m.status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
+        raise RuntimeError(f"Gurobi status {m.status} in Benders master.")
+
+    # Extract solution
+    x_sol = [int(round(x[i].X)) for i in x_index_list]
+    g_sol = [int(round(g[i].X)) for i in x_index_list]
+    y_val = { (e,l,d): int(round(y[e,l,d].X)) for (e,l,d) in x_index_list }
+    r_sol = [1 if x[i].X + g[i].X < y[i].X else 0  for i in x_index_list]
+
+    # Compute the original full objective value for consistency
+    def comm_value_full(y_bin: Dict[Tuple[int,int,int], int]) -> float:
+        total = 0.0
+        for (u, v, f) in edges:
+            S = 0.0
+            for d in range(M):
+                S += min(y_bin[(u[0], u[1], d)], y_bin[(v[0], v[1], d)])
+            if S > 1.0:
+                S = 1.0
+            total += f * COMM_COEFF * (1.0 - S)
+        return total
+
+    # compute + load
+    comp_val = 0.0
+    load_val = 0.0
+    for d in range(M):
+        for l in range(L):
+            for e in range(E):
+                pi_el = pi.get((e, l), 0.0)
+                comp_val += pi_el * (g[e, l, d].X * beta_vec[d] + (y[e, l, d].X - g[e, l, d].X )* alpha_vec[d])
+                load_val += pi_el * (expert_size / (devs[d].s_disk if devs[d].s_disk else 1.0)) * (y[e, l, d].X - x[e, l, d].X - g[e, l, d].X)
+    obj_full = comp_val + load_val + comm_value_full(y_val)
+    print(obj_full)
+    result = MINLPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=float(obj_full))
+    for i in m.getVars():
+        if i.X > 0 and ("x" in i.varName or "r" in i.varName or "g" in i.varName or "w" in i.varName):
+            print(i.varName, i.X)
+
+    print(obj_full)
+    # Plot
+    fig, ax = plot_solution_heatmap(result, E=E, L=L, M=M)
+    plt.show()
+
+    return result
+
 
