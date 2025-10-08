@@ -561,12 +561,18 @@ def gurobi_solve(
     # Layer-DeviceRAM assignment
     for l in range(L):
         for d in range(M):
-            m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * zc[l,d], name=f"layer_allocation[{l},{d}]")
+            if d not in sets["M2"]:
+                m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * zc[l,d], name=f"layer_allocation[{l},{d}]")
 
     # Layer-DeviceVRAM assignment
     for l in range(L):
         for d in range(M):
-            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E)) <= E * zg[l,d], name=f"layer_allocation[{l},{d}]")
+            if d not in sets["M2"]:
+                m.addConstr(gp.quicksum(g[e, l, d] for e in range(E)) <= E * zg[l,d], name=f"layer_allocation[{l},{d}]")
+
+    for l in range(L):
+        for d in sets["M2"]:
+            m.addConstr(gp.quicksum(g[e, l, d] + x[e, l, d] for e in range(E)) <= E * zc[l,d], name=f"unified_layer_allocation[{l},{d}]")
 
     # CPU and GPU linking
     for l in range(L):
@@ -591,21 +597,21 @@ def gurobi_solve(
         dev_metal = float(devs[d].d_avail_metal or 0)
         rhs = dev_metal - devs[d].c_gpu
         m.addConstr(
-            gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
+            gp.quicksum(expert_size * (x[e, l, d]+g[e, l, d]) for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
                 zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"M2_ram[{d}]")
 
-    # VRAM
-    for d in range(M):
-        i = devs[d]
-        # CUDA VRAM bound
-        # if d.has_cuda and d.d_avail_cuda is not None:
-        #     rhs = d.d_avail_cuda - d.c_gpu
-        #     m.addConstr(n[i] <= rhs, name=f"cuda_vram[{i}]")
-        # Metal shared-memory bound
-        if i.has_metal and i.d_avail_metal is not None:
-            rhs = i.d_avail_metal - i.c_gpu
-            m.addConstr(gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
-                zg[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"metal_shared[{d}]")
+    # # VRAM
+    # for d in range(M):
+    #     i = devs[d]
+    #     # CUDA VRAM bound
+    #     # if d.has_cuda and d.d_avail_cuda is not None:
+    #     #     rhs = d.d_avail_cuda - d.c_gpu
+    #     #     m.addConstr(n[i] <= rhs, name=f"cuda_vram[{i}]")
+    #     # Metal shared-memory bound
+    #     if i.has_metal and i.d_avail_metal is not None:
+    #         rhs = i.d_avail_metal - i.c_gpu
+    #         m.addConstr(gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E)) <= rhs - gp.quicksum(
+    #             zg[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)), name=f"metal_shared[{d}]")
 
     # No GPU
     for d in range(M):
@@ -671,26 +677,95 @@ def gurobi_solve(
     fig, ax = plot_solution_heatmap(result, E=E, L=L, M=M)
     plt.show()
 
+    # ---------------- Structured summary of assignments (MILP) ----------------
+    # Classify per device:
+    #  GPU if g[e,l,d] = 1
+    #  CPU if x[e,l,d] = 1
+    #  Disk if y[e,l,d] = 1 and x=g=0
+    per_device = {d: {"CPU": [], "GPU": [], "Disk": []} for d in range(M)}
+
+    for l in range(L):
+        for e in range(E):
+            for d in range(M):
+                yv = float(y[e, l, d].X) if (e, l, d) in y else 0.0
+                xv = float(x[e, l, d].X) if (e, l, d) in x else 0.0
+                gv = float(g[e, l, d].X) if (e, l, d) in g else 0.0
+                if gv >= 0.5:
+                    per_device[d]["GPU"].append((e, l))
+                elif xv >= 0.5:
+                    per_device[d]["CPU"].append((e, l))
+                elif yv >= 0.5:
+                    per_device[d]["Disk"].append((e, l))
+                # else: not present on this device
+
+    print("\n================ Residency & Execution Summary (MILP) ================")
+    try:
+        print(f"Total objective (model ObjVal): {m.ObjVal:.6f}s\n")
+    except Exception:
+        pass
+
+    grand_counts = {"CPU": 0, "GPU": 0, "Disk": 0}
+    for d in range(M):
+        print(f"Device {d}:")
+        for mode in ("CPU", "GPU", "Disk"):
+            pairs = per_device[d][mode]
+            grand_counts[mode] += len(pairs)
+            tokens = [f"e{e}-l{l}" for (e, l) in pairs]
+            if not tokens:
+                print(f"  {mode:<4}: (none)")
+            else:
+                print(f"  {mode:<4}: {len(tokens)} item(s)")
+                row = []
+                for i, t in enumerate(tokens, 1):
+                    row.append(t)
+                    if i % 12 == 0:
+                        print("          " + ", ".join(row))
+                        row = []
+                if row:
+                    print("          " + ", ".join(row))
+        print("")
+
+    print("Totals:")
+    print(f"  CPU : {grand_counts['CPU']}")
+    print(f"  GPU : {grand_counts['GPU']}")
+    print(f"  Disk: {grand_counts['Disk']}")
+    print("===================================================================\n")
+
     return result
 
 
-# -------------------- Benders decomposition solver --------------------
-def gurobi_solve_benders(
-    path: str,
-    devs: List[DeviceProfile],
-    model: ModelProfile,
-    mip_gap: float = 0.0005,
-    time_limit: float = 120.0,
-)-> MINLPResult:
+def gurobi_solve_SA(
+        path: str,
+        devs: List[DeviceProfile],
+        model: ModelProfile,
+        mip_gap: float = 0.0005,  # kept for API symmetry; unused in SA
+        time_limit: float = 120.0,
+) -> MINLPResult:
     """
-    Benders decomposition for the communication term.
-    Master keeps (x,y,g,zc,zg) and per-edge theta variables; a user-cut callback
-    adds optimality cuts derived from the dual of the per-edge LP that maximizes co-location.
+    Simulated annealing on the residency assignment y (exactly ONE device per (e,l)).
+    For each candidate y, we solve a fast greedy subproblem (no IP) to decide CPU/GPU/Disk
+    for each (e,l) on its assigned device, respecting RAM/VRAM and per-(layer,device)
+    first-use overheads (KV+router+attn).
+
+    Objective evaluated per solution:
+        total = Compute + Load + Comm
+      where:
+        Compute + Load are computed from the greedy subproblem, and
+        Comm(y) = sum_{(u->v)} flow(u->v)*COMM_COEFF * I{device(u)!=device(v)}.
+
+    Returns
+    -------
+    MINLPResult with x,g,r flattened in (d,l,e) order and obj_value = total latency.
     """
     import time
+    import random
+    from collections import defaultdict
+
+    start_time = time.time()
     M = len(devs)
     L = model.L
     E = model.n_routed_experts
+
     sets = assign_sets(devs)
     kv_cache_size = kv_size(model)
     router_size = model.router_bytes["1"]
@@ -699,10 +774,11 @@ def gurobi_solve_benders(
 
     alpha_vec, beta_vec = objective_vectors(devs, model, sets)
 
+    # Transitions and visit probabilities
     transitions, layers = load_transitions(path)
     pi = compute_visit_probabilities(transitions, layers)
 
-    # Build edges with nonzero flow
+    # Edges with nonzero flow
     edges: List[Tuple[Node, Node, float]] = []
     for u, nbrs in transitions.items():
         if u[1] != -1:
@@ -711,189 +787,450 @@ def gurobi_solve_benders(
                 if f > 0.0:
                     edges.append((u, v, f))
 
+    # el_weight = defaultdict(float)
+    # for (u, v, f) in edges:
+    #     el_weight[(u[0], u[1])] += float(f)
+    #     el_weight[(v[0], v[1])] += float(f)
+    #
+    # # Build fixed index mapping and weighted CDF for fast sampling
+    # el_index = {}
+    # el_keys = []
+    # weights = []
+    # eps_w = 1e-12
+    # k = 0
+    # for l_idx in range(L):
+    #     for e_idx in range(E):
+    #         el_index[(e_idx, l_idx)] = k
+    #         el_keys.append((e_idx, l_idx))
+    #         weights.append(el_weight.get((e_idx, l_idx), 0.0) + eps_w)
+    #         k += 1
+    # # Normalize to CDF
+    # total_w = float(sum(weights)) if weights else 1.0
+    # cdf = []
+    # acc = 0.0
+    # for w in weights:
+    #     acc += (w / total_w)
+    #     cdf.append(acc)
+
+    # def _sample_el_edge_aware(rng_local: random.Random) -> tuple[int, int]:
+    #     """Inverse-CDF sample of (e,l) proportional to incident flow weight."""
+    #     r = rng_local.random()
+    #     # binary search in cdf
+    #     lo, hi = 0, len(cdf) - 1
+    #     while lo < hi:
+    #         mid = (lo + hi) // 2
+    #         if r <= cdf[mid]:
+    #             hi = mid
+    #         else:
+    #             lo = mid + 1
+    #     return el_keys[lo]
+
+    # Communication coefficient (match your Benders setup for apples-to-apples)
     COMM_COEFF = 0.02
 
-    # Index list in (e,l,d)
-    x_index_list = []
-    for d in range(M):
-        for l in range(L):
-            for e in range(E):
-                x_index_list.append((e, l, d))
+    # ---- Exact-one y state: map (e,l) -> device id ----
+    # Greedy initializer: place higher-π first, prefer feasible GPU (VRAM), else CPU (RAM), else any.
+    y_state: Dict[Tuple[int, int], int] = {}
 
-    # Master model
-    m = gp.Model("MoeDelo_Benders")
-    m.Params.MIPGap = mip_gap
-    m.Params.TimeLimit = time_limit
-    m.Params.PreCrush = 1      # needed to cut at node relaxation
-    m.Params.Cuts = 2
+    # Soft capacity trackers for initializer only (the greedy subproblem below enforces capacities again)
+    ram_cpu = [float(devs[d].d_avail_ram or 0.0) for d in range(M)]
+    ram_vram = [
+        float((devs[d].d_avail_metal or 0.0) - (devs[d].c_gpu or 0.0))
+        if devs[d].has_metal and devs[d].d_avail_metal is not None else 0.0
+        for d in range(M)
+    ]
+    zc_used0 = [[0 for _ in range(M)] for _ in range(L)]
+    zg_used0 = [[0 for _ in range(M)] for _ in range(L)]
 
-    x = m.addVars(x_index_list, vtype=GRB.BINARY, name="x")
-    y = m.addVars(x_index_list, vtype=GRB.BINARY, name="y")
-    g = m.addVars(x_index_list, vtype=GRB.BINARY, name="g")
-    zc = m.addVars(L, M, vtype=GRB.BINARY, name="zc")
-    zg = m.addVars(L, M, vtype=GRB.BINARY, name="zg")
+    def _can_gpu_init(l_idx: int, d_idx: int) -> bool:
+        # device supports GPU path?
+        if not ((devs[d_idx].has_metal and devs[d_idx].d_avail_metal is not None) or
+                (devs[d_idx].has_cuda and devs[d_idx].d_avail_cuda is not None)):
+            return False
+        need = expert_size
+        overhead = (kv_cache_size + router_size + attention_size) if zg_used0[l_idx][d_idx] == 0 else 0
+        return ram_vram[d_idx] >= need + overhead
 
-    # Per-edge comm placeholder
-    theta = {}
-    for (u, v, f) in edges:
-        theta[(u, v)] = m.addVar(lb=0.0, name=f"theta[{u[0]},{u[1]}->{v[0]},{v[1]}]")
+    def _place_gpu_init(e_idx: int, l_idx: int, d_idx: int):
+        overhead = (kv_cache_size + router_size + attention_size) if zg_used0[l_idx][d_idx] == 0 else 0
+        ram_vram[d_idx] -= (expert_size + overhead)
+        zg_used0[l_idx][d_idx] = 1
+        y_state[(e_idx, l_idx)] = d_idx
 
-    # Residency: each (e,l) resident on >=1 device
-    for l in range(L):
-        for e in range(E):
-            m.addConstr(gp.quicksum(y[e, l, d] for d in range(M)) >= 1, name=f"resident[{e},{l}]")
+    def _can_cpu_init(l_idx: int, d_idx: int) -> bool:
+        need = expert_size
+        overhead = (kv_cache_size + router_size + attention_size) if zc_used0[l_idx][d_idx] == 0 else 0
+        return ram_cpu[d_idx] >= need + overhead
 
-    # Link z with x/g
-    for l in range(L):
+    def _place_cpu_init(e_idx: int, l_idx: int, d_idx: int):
+        overhead = (kv_cache_size + router_size + attention_size) if zc_used0[l_idx][d_idx] == 0 else 0
+        ram_cpu[d_idx] -= (expert_size + overhead)
+        zc_used0[l_idx][d_idx] = 1
+        y_state[(e_idx, l_idx)] = d_idx
+
+    el_list = [(e, l, pi.get((e, l), 0.0)) for l in range(L) for e in range(E)]
+    el_list.sort(key=lambda t: t[2], reverse=True)
+
+    for (e_i, l_i, _) in el_list:
+        gpu_cands = [(beta_vec[d], d) for d in range(M) if _can_gpu_init(l_i, d)]
+        cpu_cands = [(alpha_vec[d], d) for d in range(M) if _can_cpu_init(l_i, d)]
+        if gpu_cands:
+            gpu_cands.sort()
+            _place_gpu_init(e_i, l_i, gpu_cands[0][1])
+        elif cpu_cands:
+            cpu_cands.sort()
+            _place_cpu_init(e_i, l_i, cpu_cands[0][1])
+        else:
+            # fallback: choose fastest disk; break ties by current load (#items already assigned)
+            # Build per-device counts from current y_state
+            counts = [0] * M
+            for (_, _), dd in y_state.items():
+                counts[dd] += 1
+            best_d = 0 if M > 0 else 0
+            best_key = None
+            for d in range(M):
+                speed = float(devs[d].s_disk or 1.0)
+                key = (-speed, counts[d])  # faster disk first (larger speed => smaller -speed), then fewer assigned
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best_d = d
+            y_state[(e_i, l_i)] = best_d
+
+    # ---- Helpers for fast subproblem (no IP) ----
+    def _device_cap_cpu(d_idx: int) -> float:
+        if d_idx in sets["M1"]:
+            return float(devs[d_idx].d_avail_ram)
+        if d_idx in sets["M2"]:
+            return float(devs[d_idx].d_avail_metal - devs[d_idx].c_gpu)
+        return float(devs[d_idx].d_avail_ram)
+
+    def _device_cap_gpu(d_idx: int) -> float:
+        di = devs[d_idx]
+        if di.has_metal and di.d_avail_metal is not None:
+            return float(di.d_avail_metal - di.c_gpu)
+        return 0.0
+
+    OVERHEAD = float(kv_cache_size + router_size + attention_size)
+
+    # Costs per (e,l,d) under your objective structure:
+    # Disk: π*(α + expert_size/s_disk), CPU: α, GPU: π*β
+    def _cost_disk(e: int, l: int, d: int) -> float:
+        pi_el = float(pi.get((e, l), 0.0))
+        ld = float(devs[d].s_disk or 1.0)
+        return pi_el * (alpha_vec[d] + (expert_size / ld))
+
+    def _cost_cpu(e: int, l: int, d: int) -> float:
+        pi_el = float(pi.get((e, l), 0.0))
+        return float(pi_el*alpha_vec[d])
+
+    def _cost_gpu(e: int, l: int, d: int) -> float:
+        pi_el = float(pi.get((e, l), 0.0))
+        return pi_el * float(beta_vec[d])
+
+    from collections import defaultdict
+
+    def _solve_subproblem_fast(state: Dict[Tuple[int, int], int]):
+        """
+        Greedy choice CPU/GPU vs Disk per (e,l) on its assigned device, subject to capacities.
+        - For devices in M2 (macOS with Metal shared memory): use ONE shared pool per device and a
+          single first-use overhead flag per (layer, device), regardless of CPU/GPU mode.
+        - For other devices: keep separate CPU and GPU pools and overhead flags as before.
+        Returns:
+            assign_x: {(e,l) -> d} for CPU,
+            assign_g: {(e,l) -> d} for GPU,
+            obj_compute_load: total compute+load,
+            zc_active, zg_active: indicator dicts for which (l,d) were opened (for non-shared),
+            z_shared_active: indicator for shared-memory open (for M2 devices).
+        """
+        assign_x: Dict[Tuple[int, int], int] = {}
+        assign_g: Dict[Tuple[int, int], int] = {}
+        zc_active = defaultdict(int)
+        zg_active = defaultdict(int)
+        z_shared_active = defaultdict(int)
+
+        cap_cpu = {d: _device_cap_cpu(d) for d in range(M)}
+        cap_gpu = {d: _device_cap_gpu(d) for d in range(M)}
+        # Shared pool for M2 devices
+        cap_shared = {}
         for d in range(M):
-            m.addConstr(gp.quicksum(x[e, l, d] for e in range(E)) <= E * zc[l, d], name=f"zc_link[{l},{d}]")
-            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E)) <= E * zg[l, d], name=f"zg_link[{l},{d}]")
+            if d in sets["M2"]:
+                # unified memory size (Metal shared) minus reserved c_gpu
+                di = devs[d]
+                cap_shared[d] = float(di.d_avail_metal or 0.0) - float(di.c_gpu or 0.0)
+            else:
+                cap_shared[d] = 0.0  # unused for non-M2
 
-    # Execute only if resident
-    for l in range(L):
-        for e in range(E):
-            for d in range(M):
-                m.addConstr(x[e, l, d] + g[e, l, d] <= y[e, l, d], name=f"exec_le_res[{e},{l},{d}]")
+        # Build candidates with dynamic reweighting after overhead flips.
+        # We maintain a max-heap keyed by density and invalidate stale entries via version counters.
+        from heapq import heappush, heappop
 
-    # RAM CPU constraints
-    for d in sets["M1"]:
-        rhs = devs[d].d_avail_ram
-        m.addConstr(
-            gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E))
-            <= rhs - gp.quicksum(zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
-            name=f"M1_ram[{d}]"
-        )
-    for d in sets["M2"]:
-        dev_metal = float(devs[d].d_avail_metal or 0)
-        rhs = dev_metal - devs[d].c_gpu
-        m.addConstr(
-            gp.quicksum(expert_size * x[e, l, d] for l in range(L) for e in range(E))
-            <= rhs - gp.quicksum(zc[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
-            name=f"M2_ram[{d}]"
-        )
+        # Version counters to invalidate stale candidates
+        ver_ldm = defaultdict(int)   # key: (l,d,mem) where mem in {"cpu","gpu","shared"}
+        ver_el  = defaultdict(int)   # key: (e,l)
 
-    # VRAM / shared memory constraints
-    for d in range(M):
-        i = devs[d]
-        if i.has_metal and i.d_avail_metal is not None:
-            rhs = i.d_avail_metal - i.c_gpu
-            m.addConstr(
-                gp.quicksum(expert_size * g[e, l, d] for l in range(L) for e in range(E))
-                <= rhs - gp.quicksum(zg[l, d] * (kv_cache_size + router_size + attention_size) for l in range(L)),
-                name=f"metal_shared[{d}]"
-            )
+        def _mk_candidate(e: int, l: int, d: int, kind: str):
+            """Return tuple for heap: (-density, delta, kind, mem, e, l, d, need, v_ldm, v_el).
+            kind in {"CPU","GPU"}. mem in {"cpu","gpu","shared"} indicates which pool is used.
+            If not beneficial or not supported, return None.
+            """
+            disk_cost = _cost_disk(e, l, d)
+            cpu_cost  = _cost_cpu(e, l, d)
+            gpu_cost  = _cost_gpu(e, l, d)
+            is_shared = (d in sets["M2"])  # UMA device => unified pool & single overhead per (l,d)
 
-    # No-GPU devices
-    for d in range(M):
-        has_cuda = bool(devs[d].has_cuda and devs[d].d_avail_cuda is not None)
-        has_metal = bool(devs[d].has_metal and devs[d].d_avail_metal is not None)
-        if not (has_cuda or has_metal):
-            m.addConstr(gp.quicksum(g[e, l, d] for e in range(E) for l in range(L)) == 0, name=f"no_gpu[{d}]")
-
-    # Objective: compute + load + sum theta
-    compute_cost_expr = gp.quicksum(
-        pi[e, l] * (g[e, l, d] * beta_vec[d] + (y[e, l, d]- g[e, l, d]- x[e, l, d])* alpha_vec[d]) + alpha_vec[d] * x[e, l, d]
-        for l in range(L) for e in range(E) for d in range(M)
-    )
-    load_cost_expr = gp.quicksum(
-        pi[e, l] * (expert_size / (devs[d].s_disk if devs[d].s_disk else 1.0)) * (y[e, l, d] - x[e, l, d] - g[e, l, d])
-        for e in range(E) for l in range(L) for d in range(M)
-    )
-    theta_sum = gp.quicksum(theta[(u, v)] for (u, v, _) in edges)
-    m.setObjective(compute_cost_expr + load_cost_expr + theta_sum, GRB.MINIMIZE)
-
-    m.update()
-
-    # ---------- Benders user-cut callback ----------
-    def benders_cb(model, where):
-        if where != GRB.Callback.MIPNODE:
-            return
-        status = model.cbGet(GRB.Callback.MIPNODE_STATUS)
-        if status != GRB.OPTIMAL:
-            return
-        # Read y and theta values at node relaxation
-        y_rel = {}
-        for (e, l, d) in x_index_list:
-            y_rel[(e, l, d)] = model.cbGetNodeRel(y[e, l, d])
-        theta_rel = {}
-        for (u, v, _) in edges:
-            theta_rel[(u, v)] = model.cbGetNodeRel(theta[(u, v)])
-
-        eps = 1e-7
-        cuts_added = 0
-        for (u, v, f) in edges:
-            # compute S = sum_d min(y_u_d, y_v_d)
-            S = 0.0
-            y_u = [y_rel[(u[0], u[1], d)] for d in range(M)]
-            y_v = [y_rel[(v[0], v[1], d)] for d in range(M)]
-            mins = [min(y_u[d], y_v[d]) for d in range(M)]
-            S = sum(mins)
-            if S >= 1.0 - 1e-9:
-                continue  # trivial bound theta >= 0 is enough
-            rhs_value = f * COMM_COEFF * (1.0 - S)
-            lhs_value = theta_rel[(u, v)]
-            if lhs_value >= rhs_value - eps:
-                continue  # not violated
-
-            # Build linear cut using a dual extreme point:
-            # gamma = 0, for each d choose alpha_d=1 if y_u_d <= y_v_d else beta_d=1
-            expr_rhs = 1.0
-            cut = theta[(u, v)]
-            # subtract F*c * (sum alpha*y_u + sum beta*y_v + gamma)
-            lin = gp.LinExpr()
-            for d in range(M):
-                if y_u[d] <= y_v[d]:
-                    lin.addTerms(1.0, y[u[0], u[1], d])
+            if kind == "CPU":
+                delta = max(0.0, disk_cost - cpu_cost)
+                if delta <= 1e-12:
+                    return None
+                if is_shared:
+                    mem = "shared"
+                    need = expert_size + (OVERHEAD if z_shared_active[(l, d)] == 0 else 0.0)
+                    # shared pool always exists for M2
+                    if cap_shared[d] <= 0.0:
+                        return None
                 else:
-                    lin.addTerms(1.0, y[v[0], v[1], d])
-            # theta >= f*c * (1 - lin)
-            model.cbCut(cut >= f * COMM_COEFF * (expr_rhs - lin))
-            cuts_added += 1
+                    mem = "cpu"
+                    need = expert_size + (OVERHEAD if zc_active[(l, d)] == 0 else 0.0)
+                    if cap_cpu[d] <= 0.0:
+                        return None
+            else:  # kind == "GPU"
+                # device must actually support GPU path
+                if _device_cap_gpu(d) <= 0.0:
+                    return None
+                delta = max(0.0, disk_cost - gpu_cost)
+                if delta <= 1e-12:
+                    return None
+                if is_shared:
+                    mem = "shared"
+                    need = expert_size + (OVERHEAD if z_shared_active[(l, d)] == 0 else 0.0)
+                    if cap_shared[d] <= 0.0:
+                        return None
+                else:
+                    mem = "gpu"
+                    need = expert_size + (OVERHEAD if zg_active[(l, d)] == 0 else 0.0)
+                    if cap_gpu[d] <= 0.0:
+                        return None
 
-    m.optimize(benders_cb)
+            density = delta / max(1.0, need)
+            return (-density, delta, kind, mem, e, l, d, need, ver_ldm[(l, d, mem)], ver_el[(e, l)])
 
-    if m.status not in (GRB.OPTIMAL, GRB.TIME_LIMIT):
-        raise RuntimeError(f"Gurobi status {m.status} in Benders master.")
+        # Max-heap of candidates across all (e,l)
+        heap = []
+        used = set()  # (e,l) already upgraded off Disk
 
-    # Extract solution
-    x_sol = [int(round(x[i].X)) for i in x_index_list]
-    g_sol = [int(round(g[i].X)) for i in x_index_list]
-    y_val = { (e,l,d): int(round(y[e,l,d].X)) for (e,l,d) in x_index_list }
-    r_sol = [1 if x[i].X + g[i].X < y[i].X else 0  for i in x_index_list]
+        for (e, l), d in state.items():
+            c1 = _mk_candidate(e, l, d, "CPU")
+            if c1 is not None:
+                heappush(heap, c1)
+            c2 = _mk_candidate(e, l, d, "GPU")
+            if c2 is not None:
+                heappush(heap, c2)
 
-    # Compute the original full objective value for consistency
-    def comm_value_full(y_bin: Dict[Tuple[int,int,int], int]) -> float:
+        # Pop best, accept if feasible, then update versions for affected keys so that
+        # subsequent pops for same (l,d,mem) or (e,l) are recomputed when encountered.
+        while heap:
+            neg_density, delta, kind, mem, e, l, d, need, v_ldm_saved, v_el_saved = heappop(heap)
+            if (e, l) in used:
+                continue
+            # Invalidate stale candidates (overhead flipped or (e,l) changed)
+            if v_ldm_saved != ver_ldm[(l, d, mem)] or v_el_saved != ver_el[(e, l)]:
+                # Recompute and push fresh version (if still beneficial)
+                c_new = _mk_candidate(e, l, d, kind)
+                if c_new is not None:
+                    heappush(heap, c_new)
+                continue
+
+            # Check capacity and accept if feasible; otherwise skip
+            if mem == "shared":
+                if cap_shared[d] < need:
+                    continue
+                # Accept
+                cap_shared[d] -= need
+                if kind == "CPU":
+                    assign_x[(e, l)] = d
+                else:
+                    assign_g[(e, l)] = d
+                used.add((e, l))
+                if z_shared_active[(l, d)] == 0:
+                    z_shared_active[(l, d)] = 1
+                    ver_ldm[(l, d, "shared")] += 1  # overhead flip => invalidate related candidates
+                ver_el[(e, l)] += 1                   # invalidate other mode for this (e,l)
+
+            elif mem == "cpu":
+                if cap_cpu[d] < need:
+                    continue
+                cap_cpu[d] -= need
+                assign_x[(e, l)] = d
+                used.add((e, l))
+                if zc_active[(l, d)] == 0:
+                    zc_active[(l, d)] = 1
+                    ver_ldm[(l, d, "cpu")] += 1
+                ver_el[(e, l)] += 1
+
+            else:  # mem == "gpu"
+                if cap_gpu[d] < need:
+                    continue
+                cap_gpu[d] -= need
+                assign_g[(e, l)] = d
+                used.add((e, l))
+                if zg_active[(l, d)] == 0:
+                    zg_active[(l, d)] = 1
+                    ver_ldm[(l, d, "gpu")] += 1
+                ver_el[(e, l)] += 1
+
+            # After acceptance, push updated candidates for OTHER (e',l') that might be impacted?
+            # We rely on lazy invalidation via version counters; when their entries are popped,
+            # they will be recomputed using the new overhead state. This keeps the loop efficient.
+
+        # Compute + Load for this assignment
+        total_compute_load = 0.0
+        for (e, l), d in state.items():
+            if assign_x.get((e, l), -1) == d:
+                total_compute_load += _cost_cpu(e, l, d)
+            elif assign_g.get((e, l), -1) == d:
+                total_compute_load += _cost_gpu(e, l, d)
+            else:
+                total_compute_load += _cost_disk(e, l, d)
+
+        return assign_x, assign_g, total_compute_load, zc_active, zg_active
+
+    # Communication cost for exact-one y
+    def _comm_cost_from_state(state: Dict[Tuple[int, int], int]) -> float:
         total = 0.0
         for (u, v, f) in edges:
-            S = 0.0
-            for d in range(M):
-                S += min(y_bin[(u[0], u[1], d)], y_bin[(v[0], v[1], d)])
-            if S > 1.0:
-                S = 1.0
-            total += f * COMM_COEFF * (1.0 - S)
+            if state.get((u[0], u[1]), -1) != state.get((v[0], v[1]), -1):
+                total += f * COMM_COEFF
         return total
 
-    # compute + load
-    comp_val = 0.0
-    load_val = 0.0
-    for d in range(M):
-        for l in range(L):
-            for e in range(E):
-                pi_el = pi.get((e, l), 0.0)
-                comp_val += pi_el * (g[e, l, d].X * beta_vec[d] + (y[e, l, d].X - g[e, l, d].X - x[e, l, d].X)* alpha_vec[d]) + alpha_vec[d] * x[e, l, d].X
-                load_val += pi_el * (expert_size / (devs[d].s_disk if devs[d].s_disk else 1.0)) * (y[e, l, d].X - x[e, l, d].X - g[e, l, d].X)
-    obj_full = comp_val + load_val + comm_value_full(y_val)
-    print(obj_full)
-    result = MINLPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=float(obj_full))
-    for i in m.getVars():
-        if i.X > 0 and ("x" in i.varName or "r" in i.varName or "g" in i.varName or "w" in i.varName):
-            print(i.varName, i.X)
+    # ----- Evaluate current state -----
+    assign_x, assign_g, sub_obj, zc_active, zg_active = _solve_subproblem_fast(y_state)
 
-    print(obj_full)
+    def _extract_minlp_result() -> MINLPResult:
+        x_sol, g_sol, r_sol = [], [], []
+        for d in range(M):
+            for l in range(L):
+                for e in range(E):
+                    on_d = 1 if y_state[(e, l)] == d else 0
+                    xv = 1 if assign_x.get((e, l), -1) == d else 0
+                    gv = 1 if assign_g.get((e, l), -1) == d else 0
+                    x_sol.append(xv)
+                    g_sol.append(gv)
+                    r_sol.append(1 if on_d and (xv + gv == 0) else 0)
+        return MINLPResult(x=x_sol, g=g_sol, r=r_sol, obj_value=0.0)
+
+    def _full_obj_from_current() -> float:
+        return sub_obj + _comm_cost_from_state(y_state)
+
+    best_result = _extract_minlp_result()
+    best_obj = _full_obj_from_current()
+    # Track incumbent objective by iteration for plotting
+    obj_history = [best_obj]
+
+    # ----- Simulated annealing loop -----
+    max_iters = 50000
+    # T = max(1e-6, 0.1 * best_obj + 1e-6)
+    T = 1000
+    cooling = 0.98
+    rng = random.Random(42)
+
+    def _neighbor_move(state: Dict[Tuple[int, int], int]) -> Tuple[Tuple[int, int], int, int]:
+        # Pure random: pick (e,l) uniformly at random.
+        e = rng.randrange(E)
+        l = rng.randrange(L)
+        d_old = state[(e, l)]
+        choices = [d for d in range(M) if d != d_old]
+        d_new = rng.choice(choices) if choices else d_old
+        return (e, l), d_old, d_new
+
+    for it in range(max_iters):
+        if time.time() - start_time >= time_limit - 0.25:
+            break
+
+        (e_mv, l_mv), d_old, d_new = _neighbor_move(y_state)
+
+        # Apply move, resolve fast subproblem, compute objective
+        y_state[(e_mv, l_mv)] = d_new
+        assign_x_new, assign_g_new, sub_obj_new, _, _ = _solve_subproblem_fast(y_state)
+        cand_obj = sub_obj_new + _comm_cost_from_state(y_state)
+
+        improve = cand_obj < best_obj - 1e-9
+
+        if not improve:
+            p
+        accept = improve or (rng.random() < np.exp(-(cand_obj - best_obj) / max(1e-9, T)))
+        if accept:
+            print("T: " + str(T))
+            best_obj = cand_obj
+            print(best_obj)
+            assign_x, assign_g, sub_obj = assign_x_new, assign_g_new, sub_obj_new
+            best_result = _extract_minlp_result()
+        else:
+            # revert move
+            y_state[(e_mv, l_mv)] = d_old
+
+        obj_history.append(best_obj)
+        T *= cooling
+
+    best_result.obj_value = float(best_obj)
+    # Plot objective trajectory
+    plt.figure(figsize=(8, 3.5))
+    plt.plot(range(len(obj_history)), obj_history, linewidth=2)
+    plt.xlabel("Iteration")
+    plt.ylabel("Incumbent objective")
+    plt.title("SA incumbent objective by iteration")
+    plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    plt.tight_layout()
+    plt.show()
     # Plot
-    fig, ax = plot_solution_heatmap(result, E=E, L=L, M=M)
+    fig, ax = plot_solution_heatmap(
+        best_result, E=E, L=L, M=M,
+        title=f"MOE allocation (SA) — total latency ≈ {best_obj:.6f}s"
+    )
     plt.show()
 
-    return result
+    # ---------------- Structured summary of assignments ----------------
+    # Build per-device lists of (expert, layer) by mode using the final SA state
+    per_device = {d: {"CPU": [], "GPU": [], "Disk": []} for d in range(M)}
+    for l in range(L):
+        for e in range(E):
+            d = y_state[(e, l)]
+            if assign_g.get((e, l), -1) == d:
+                per_device[d]["GPU"].append((e, l))
+            elif assign_x.get((e, l), -1) == d:
+                per_device[d]["CPU"].append((e, l))
+            else:
+                per_device[d]["Disk"].append((e, l))
 
+    # Pretty-print summary
+    print("\n================ Residency & Execution Summary (SA) ================")
+    print(f"Total objective (Compute+Load+Comm): {best_obj:.6f}s\n")
+    grand_counts = {"CPU": 0, "GPU": 0, "Disk": 0}
 
+    for d in range(M):
+        print(f"Device {d}:")
+        for mode in ("CPU", "GPU", "Disk"):
+            pairs = per_device[d][mode]
+            grand_counts[mode] += len(pairs)
+            # Format as eX-lY compact tokens in rows of up to 12
+            tokens = [f"e{e}-l{l}" for (e, l) in pairs]
+            if not tokens:
+                print(f"  {mode:<4}: (none)")
+            else:
+                print(f"  {mode:<4}: {len(tokens)} item(s)")
+                row = []
+                for i, t in enumerate(tokens, 1):
+                    row.append(t)
+                    if i % 12 == 0:
+                        print("          " + ", ".join(row))
+                        row = []
+                if row:
+                    print("          " + ", ".join(row))
+        print("")
+
+    print("Totals:")
+    print(f"  CPU : {grand_counts['CPU']}")
+    print(f"  GPU : {grand_counts['GPU']}")
+    print(f"  Disk: {grand_counts['Disk']}")
+    print("===================================================================\n")
+
+    return best_result

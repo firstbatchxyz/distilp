@@ -20,7 +20,7 @@ try:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import gurobi_solve,gurobi_solve_benders
+    from src.dsolver.gurobi_solver import gurobi_solve, gurobi_solve_SA
 except Exception:
     # Script-style fallback
     from src.dsolver.components.gurobi_loader import (
@@ -31,7 +31,7 @@ except Exception:
         load_model_profile,
     )
     from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import gurobi_solve,gurobi_solve_benders
+    from src.dsolver.gurobi_solver import gurobi_solve, gurobi_solve_SA
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
@@ -219,7 +219,7 @@ Examples:
             print("Running MOEdelo solver...")
             print(f"{'='*60}")
 
-        result = gurobi_solve(
+        result =gurobi_solve_SA(
              "gpt_oss_20b_10k_1024_random.json",
             devices,
             model,
