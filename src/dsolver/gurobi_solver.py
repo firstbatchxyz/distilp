@@ -1145,7 +1145,6 @@ def gurobi_solve_SA(
     for it in range(max_iters):
         if time.time() - start_time >= time_limit - 0.25:
             break
-
         (e_mv, l_mv), d_old, d_new = _neighbor_move(y_state)
 
         # Apply move, resolve fast subproblem, compute objective
