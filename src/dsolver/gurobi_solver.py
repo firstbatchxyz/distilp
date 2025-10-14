@@ -733,7 +733,6 @@ def gurobi_solve(
 
     return result
 
-
 def gurobi_solve_SA(
         path: str,
         devs: List[DeviceProfile],
@@ -759,7 +758,6 @@ def gurobi_solve_SA(
     """
     import time
     import random
-    from collections import defaultdict
 
     start_time = time.time()
     M = len(devs)
@@ -787,45 +785,8 @@ def gurobi_solve_SA(
                 if f > 0.0:
                     edges.append((u, v, f))
 
-    # el_weight = defaultdict(float)
-    # for (u, v, f) in edges:
-    #     el_weight[(u[0], u[1])] += float(f)
-    #     el_weight[(v[0], v[1])] += float(f)
-    #
-    # # Build fixed index mapping and weighted CDF for fast sampling
-    # el_index = {}
-    # el_keys = []
-    # weights = []
-    # eps_w = 1e-12
-    # k = 0
-    # for l_idx in range(L):
-    #     for e_idx in range(E):
-    #         el_index[(e_idx, l_idx)] = k
-    #         el_keys.append((e_idx, l_idx))
-    #         weights.append(el_weight.get((e_idx, l_idx), 0.0) + eps_w)
-    #         k += 1
-    # # Normalize to CDF
-    # total_w = float(sum(weights)) if weights else 1.0
-    # cdf = []
-    # acc = 0.0
-    # for w in weights:
-    #     acc += (w / total_w)
-    #     cdf.append(acc)
 
-    # def _sample_el_edge_aware(rng_local: random.Random) -> tuple[int, int]:
-    #     """Inverse-CDF sample of (e,l) proportional to incident flow weight."""
-    #     r = rng_local.random()
-    #     # binary search in cdf
-    #     lo, hi = 0, len(cdf) - 1
-    #     while lo < hi:
-    #         mid = (lo + hi) // 2
-    #         if r <= cdf[mid]:
-    #             hi = mid
-    #         else:
-    #             lo = mid + 1
-    #     return el_keys[lo]
-
-    # Communication coefficient (match your Benders setup for apples-to-apples)
+    # Communication coefficient 
     COMM_COEFF = 0.02
 
     # ---- Exact-one y state: map (e,l) -> device id ----
@@ -833,8 +794,8 @@ def gurobi_solve_SA(
     y_state: Dict[Tuple[int, int], int] = {}
 
     # Soft capacity trackers for initializer only (the greedy subproblem below enforces capacities again)
-    ram_cpu = [float(devs[d].d_avail_ram or 0.0) for d in range(M)]
-    ram_vram = [
+    ram_available = [float(devs[d].d_avail_ram or 0.0) for d in range(M)]
+    vram_available = [
         float((devs[d].d_avail_metal or 0.0) - (devs[d].c_gpu or 0.0))
         if devs[d].has_metal and devs[d].d_avail_metal is not None else 0.0
         for d in range(M)
@@ -849,22 +810,22 @@ def gurobi_solve_SA(
             return False
         need = expert_size
         overhead = (kv_cache_size + router_size + attention_size) if zg_used0[l_idx][d_idx] == 0 else 0
-        return ram_vram[d_idx] >= need + overhead
+        return vram_available[d_idx] >= need + overhead
 
     def _place_gpu_init(e_idx: int, l_idx: int, d_idx: int):
         overhead = (kv_cache_size + router_size + attention_size) if zg_used0[l_idx][d_idx] == 0 else 0
-        ram_vram[d_idx] -= (expert_size + overhead)
+        vram_available[d_idx] -= (expert_size + overhead)
         zg_used0[l_idx][d_idx] = 1
         y_state[(e_idx, l_idx)] = d_idx
 
     def _can_cpu_init(l_idx: int, d_idx: int) -> bool:
         need = expert_size
         overhead = (kv_cache_size + router_size + attention_size) if zc_used0[l_idx][d_idx] == 0 else 0
-        return ram_cpu[d_idx] >= need + overhead
+        return ram_available[d_idx] >= need + overhead
 
     def _place_cpu_init(e_idx: int, l_idx: int, d_idx: int):
         overhead = (kv_cache_size + router_size + attention_size) if zc_used0[l_idx][d_idx] == 0 else 0
-        ram_cpu[d_idx] -= (expert_size + overhead)
+        ram_available[d_idx] -= (expert_size + overhead)
         zc_used0[l_idx][d_idx] = 1
         y_state[(e_idx, l_idx)] = d_idx
 
@@ -916,7 +877,7 @@ def gurobi_solve_SA(
     # Disk: π*(α + expert_size/s_disk), CPU: α, GPU: π*β
     def _cost_disk(e: int, l: int, d: int) -> float:
         pi_el = float(pi.get((e, l), 0.0))
-        ld = float(devs[d].s_disk or 1.0)
+        ld = float(devs[d].s_disk)
         return pi_el * (alpha_vec[d] + (expert_size / ld))
 
     def _cost_cpu(e: int, l: int, d: int) -> float:
@@ -1145,6 +1106,7 @@ def gurobi_solve_SA(
     for it in range(max_iters):
         if time.time() - start_time >= time_limit - 0.25:
             break
+
         (e_mv, l_mv), d_old, d_new = _neighbor_move(y_state)
 
         # Apply move, resolve fast subproblem, compute objective
@@ -1154,8 +1116,8 @@ def gurobi_solve_SA(
 
         improve = cand_obj < best_obj - 1e-9
 
-        if not improve:
-            p
+        # if not improve:
+        #     p
         accept = improve or (rng.random() < np.exp(-(cand_obj - best_obj) / max(1e-9, T)))
         if accept:
             print("T: " + str(T))
