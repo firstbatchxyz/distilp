@@ -445,7 +445,7 @@ def solve_fixed_k_ilp(
 
 
 # --- Gurobi-free SciPy version without linearization ---
-def solve_fixed_k_ilp(
+def solve_fixed_k_ilp_free(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
@@ -724,7 +724,7 @@ def halda_solve(
         try:
 
             print("k: " + str(kf))
-            res = solve_fixed_k_ilp(
+            res = solve_fixed_k_ilp_free(
                 devs,
                 model,
                 sets,
