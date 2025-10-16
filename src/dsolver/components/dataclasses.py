@@ -4,11 +4,9 @@ Data classes for HALDA solver profiles.
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional
+from typing import Dict, Optional
 
-QuantPerf = Dict[
-    str, Dict[str, float]
-]  # FLOPS per-quantization key with batch sizes: {"Q4_K": {"b_1": ..., "b_2": ..., ...}, "F16": {"b_1": ..., ...}, ...}
+QuantPerf = Dict[str, Dict[str, float]]
 
 
 @dataclass
@@ -18,7 +16,6 @@ class DeviceProfile:
     Notation in comments matches the paper's symbols.
     """
 
-    # --- required (no defaults) ---
     name: str
     os_type: str  # 'mac_no_metal' | 'mac_metal' | 'linux' | 'android'
     is_head: bool  # I_{m=1}  (True for the head device that holds input/output layers on CPU)
@@ -101,9 +98,13 @@ class ModelProfile:
     bytes_shared_experts: Optional[Dict[str, int]] = None  # Bytes for shared experts
 
     # Optional per-layer FLOP metrics (for MoE models)
-    attn_flops: Optional[Dict[str, Dict[str, list]]] = None  # Attention FLOPs (prefill/decode)
+    attn_flops: Optional[Dict[str, Dict[str, list]]] = (
+        None  # Attention FLOPs (prefill/decode)
+    )
     flops_per_expert: Optional[Dict[str, int]] = None  # FLOPs per expert per layer
     flops_shared_experts: Optional[Dict[str, int]] = None  # FLOPs for shared experts
     router_flops: Optional[Dict[str, int]] = None  # Router FLOPs per layer
     router_bytes: Optional[Dict[str, int]] = None  # Router bytes per layer
-    flops_per_active_expert_per_token: Optional[Dict[str, int]] = None  # Active expert FLOPs
+    flops_per_active_expert_per_token: Optional[Dict[str, int]] = (
+        None  # Active expert FLOPs
+    )

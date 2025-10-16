@@ -9,29 +9,13 @@ import json
 import sys
 from typing import List
 
-# Be resilient to being run as a script or module
-try:
-    # Package-style imports
-    from src.dsolver.components.gurobi_loader import (
-        load_devices_and_model,
-        load_from_combined_json,
-        load_from_profile_folder,
-        load_device_profile,
-        load_model_profile,
-    )
-    from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import halda_solve
-except Exception:
-    # Script-style fallback
-    from src.dsolver.components.gurobi_loader import (
-        load_devices_and_model,
-        load_from_combined_json,
-        load_from_profile_folder,
-        load_device_profile,
-        load_model_profile,
-    )
-    from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-    from src.dsolver.gurobi_solver import halda_solve
+
+from src.dsolver.components.loader import (
+    load_devices_and_model,
+    load_from_profile_folder,
+)
+from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
+from src.dsolver.scipy_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
@@ -222,11 +206,7 @@ Examples:
         result = halda_solve(
             devices,
             model,
-            sdisk_threshold=args.sdisk_threshold,
-            k_candidates=args.k_candidates,
-            time_limit_per_k=args.time_limit,
             mip_gap=args.mip_gap,
-            max_outer_iters=args.max_iters,
             plot=not args.no_plot,
         )
 

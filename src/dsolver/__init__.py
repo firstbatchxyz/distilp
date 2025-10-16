@@ -2,9 +2,9 @@
 HALDA Solver - Distributed LLM Inference Optimization Library
 """
 
-from .gurobi_solver import halda_solve
+from .scipy_solver import halda_solve
 from .components.dataclasses import DeviceProfile, ModelProfile
-from .components.gurobi_loader import (
+from .components.loader import (
     load_device,
     load_model,
     load_model_profile_from_dict,

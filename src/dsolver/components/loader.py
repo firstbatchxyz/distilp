@@ -11,7 +11,7 @@ import os
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Tuple, Union
 from .dataclasses import DeviceProfile, ModelProfile
 
 
@@ -39,7 +39,9 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes from any precision that has them
         batch_keys = set()
@@ -55,17 +57,23 @@ def load_device_profile(device_path: str) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -75,7 +83,7 @@ def load_device_profile(device_path: str) -> DeviceProfile:
             scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
             scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
             scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
-            scpu["Q8_0"][batch_key] = f32_val * 0.5   # Q8_0 typically ~50% of f32 FLOPS
+            scpu["Q8_0"][batch_key] = f32_val * 0.5  # Q8_0 typically ~50% of f32 FLOPS
             scpu["F16"][batch_key] = fp16_val
             scpu["BF16"][batch_key] = bf16_val
             scpu["F32"][batch_key] = f32_val
@@ -96,7 +104,9 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes
         batch_keys = set()
@@ -111,17 +121,23 @@ def load_device_profile(device_path: str) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -151,7 +167,9 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes
         batch_keys = set()
@@ -166,17 +184,23 @@ def load_device_profile(device_path: str) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -247,12 +271,16 @@ def load_model_profile(model_path: str) -> ModelProfile:
     if isinstance(fqd, dict):
         decode = fqd.get("decode", {}) if isinstance(fqd.get("decode"), dict) else {}
         if not decode:
-            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
+            raise ValueError(
+                "Model profile must include f_by_quant.decode or f_q.decode with batch arrays"
+            )
 
         batches = list(decode.keys())
         for key in batches:
             if len(decode[key]) != L + 1:
-                raise ValueError(f"f_q.decode batch '{key}' must have L+1={L+1} entries, found {len(decode[key])}")
+                raise ValueError(
+                    f"f_q.decode batch '{key}' must have L+1={L + 1} entries, found {len(decode[key])}"
+                )
             f_q[key] = decode[key][1]
     else:
         raise ValueError("Model profile must include f_q.decode")
@@ -260,9 +288,13 @@ def load_model_profile(model_path: str) -> ModelProfile:
     foutd = data.get("f_out")
     f_out = {}
     if isinstance(foutd, dict):
-        decode = foutd.get("decode", {}) if isinstance(foutd.get("decode"), dict) else {}
+        decode = (
+            foutd.get("decode", {}) if isinstance(foutd.get("decode"), dict) else {}
+        )
         if not decode:
-            raise ValueError("Model profile must include f_by_quant.decode or f_q.decode with batch arrays")
+            raise ValueError(
+                "Model profile must include f_by_quant.decode or f_q.decode with batch arrays"
+            )
         batches = list(decode.keys())
         for key in batches:
             f_out[key] = decode[key]
@@ -308,9 +340,11 @@ def load_model_profile(model_path: str) -> ModelProfile:
             flops_shared_experts=data.get("flops_shared_experts"),
             router_flops=data.get("router_flops"),
             router_bytes=data.get("router_bytes"),
-            flops_per_active_expert_per_token=data.get("flops_per_active_expert_per_token"),
+            flops_per_active_expert_per_token=data.get(
+                "flops_per_active_expert_per_token"
+            ),
         )
-    except Exception as e :
+    except Exception as e:
         raise ValueError(f"Error creating ModelProfile: {e}")
 
 
@@ -356,13 +390,12 @@ def load_from_profile_folder(
     Returns:
         Tuple of (devices list, model profile)
     """
-    import os
     from pathlib import Path
 
     profile_dir = Path(profile_path)
     if not profile_dir.exists():
         # Try with 'profiles' prefix if not found
-        profile_dir = Path("profiles") / profile_path
+        profile_dir = Path("test/profiles") / profile_path
         if not profile_dir.exists():
             raise FileNotFoundError(f"Profile folder not found: {profile_path}")
 
@@ -471,7 +504,9 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes from any precision that has them
         batch_keys = set()
@@ -487,17 +522,23 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -507,7 +548,7 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
             scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
             scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
             scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
-            scpu["Q8_0"][batch_key] = f32_val * 0.5   # Q8_0 typically ~50% of f32 FLOPS
+            scpu["Q8_0"][batch_key] = f32_val * 0.5  # Q8_0 typically ~50% of f32 FLOPS
             scpu["F16"][batch_key] = fp16_val
             scpu["BF16"][batch_key] = bf16_val
             scpu["F32"][batch_key] = f32_val
@@ -528,7 +569,9 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes
         batch_keys = set()
@@ -543,17 +586,23 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"Metal GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -583,7 +632,9 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         if not isinstance(fp16_data, dict):
             fp16_data = {"b_1": fp16_data}
         if not isinstance(bf16_data, dict):
-            bf16_data = {"b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75}
+            bf16_data = {
+                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
+            }
 
         # Get all batch sizes
         batch_keys = set()
@@ -598,17 +649,23 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
             "Q8_0": {},
             "F16": {},
             "BF16": {},
-            "F32": {}
+            "F32": {},
         }
 
         for batch_key in batch_keys:
             # Check that all precisions have the same batch keys
             if batch_key not in f32_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in fp16/bf16 but missing in f32 data"
+                )
             if batch_key not in fp16_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in f32/bf16 but missing in fp16 data"
+                )
             if batch_key not in bf16_data:
-                raise ValueError(f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data")
+                raise ValueError(
+                    f"CUDA GPU: Batch key '{batch_key}' found in f32/fp16 but missing in bf16 data"
+                )
 
             f32_val = f32_data[batch_key]
             fp16_val = fp16_data[batch_key]
@@ -824,7 +881,7 @@ def main():
             devices, model = load_devices_and_model(args.devices, args.model)
 
         print(f"Loaded {len(devices)} devices")
-        print(f"Model: L={model.L}, b_layer={model.b_layer/(1024**2):.1f}MB")
+        print(f"Model: L={model.L}, b_layer={model.b_layer / (1024**2):.1f}MB")
         print(
             f"Model params: hk={model.hk}, ek={model.ek}, n_kv={model.n_kv}, V={model.V}"
         )
