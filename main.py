@@ -10,12 +10,12 @@ import sys
 from typing import List
 
 
-from src.dsolver.components.loader import (
+from src.distilp.components.loader import (
     load_devices_and_model,
     load_from_profile_folder,
 )
-from src.dsolver.components.dataclasses import DeviceProfile, ModelProfile
-from src.dsolver.scipy_solver import halda_solve
+from src.distilp.components.dataclasses import DeviceProfile, ModelProfile
+from src.distilp.scipy_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
