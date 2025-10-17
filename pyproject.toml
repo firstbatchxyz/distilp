@@ -1,7 +1,11 @@
 [project]
-name = "dsolver"
+name = "distilp"
 version = "0.1.1"
-description = "HALDA Solver - Distributed LLM Inference Optimization Library"
+description = "distilp: A Python library for ILP-based layer/expert assignment for distributed inference across heterogeneous devices"
+authors = [
+  { name = "andthattoo", email = "omer@dria.co" },
+  { name = "Mehmet Uzunosmanoğlu", email = "mehmetu@firstbatch.xyz" },
+]
 requires-python = ">=3.12"
 dependencies = [
   "matplotlib>=3.10.6",
