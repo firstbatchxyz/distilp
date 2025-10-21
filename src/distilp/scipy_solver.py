@@ -23,7 +23,7 @@ from .components.dense_common import (
 )
 
 
-def solve_fixed_k_minlp(
+def solve_fixed_k_milp(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
@@ -37,209 +37,234 @@ def solve_fixed_k_minlp(
     M = len(devs)
     W = model.L // k
     bprime = b_prime(model)
-    disk_size = 2000000000000
     disk_speed_threshold = 51446428
 
     # Coefficients and constants (same as Gurobi version)
     a, b, c_vec = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
 
-    # Build the set of feasible y-patterns (respect slow-disk => y=0)
+    # Determine which devices have too-slow disks (overflow not allowed)
     forced_zero = [int(d.s_disk < disk_speed_threshold) for d in devs]
-    patterns = []
-    for bits in itertools.product([0, 1], repeat=M):
-        ok = True
-        for i in range(M):
-            if forced_zero[i] and bits[i] == 1:
-                ok = False
-                break
-        if ok:
-            patterns.append(tuple(bits))
 
-    best_obj = None
-    best_sol = None
-    best_y = None
+    # ----------------------------
+    # Variable indexing
+    # ----------------------------
+    # x = [ w(0..M-1) | n(0..M-1) | s1(0..M-1) | s2(0..M-1) | s3(0..M-1) | t(0..M-1) ]
+    def idx_w(i):
+        return i
 
-    # Precompute per-device caps for n (Nmax) from VRAM/shared mem constraints
-    Nmax = [W] * M
+    def idx_n(i):
+        return M + i
+
+    def idx_s1(i):
+        return 2 * M + i
+
+    def idx_s2(i):
+        return 3 * M + i
+
+    def idx_s3(i):
+        return 4 * M + i
+
+    def idx_t(i):
+        return 5 * M + i
+
+    Nvars = 6 * M
+
+    # ----------------------------
+    # Bounds & integrality
+    # ----------------------------
+    lb = np.zeros(Nvars)
+    ub = np.zeros(Nvars)
+
+    # n upper bounds: allow up to W layers unless the device has no GPU backend at all
+    # slacks are in LAYERS (integers): [0, W], but can be forced to 0 by slow-disk policy
+
     for i, d in enumerate(devs):
+        # w: at least 1 layer on each active device as before, up to W
+        lb[idx_w(i)] = 1
+        ub[idx_w(i)] = W
+
+        # n: if no CUDA and no Metal, n must be 0; otherwise allow up to W
         has_cuda = bool(d.has_cuda and d.d_avail_cuda is not None)
         has_metal = bool(d.has_metal and d.d_avail_metal is not None)
         if not (has_cuda or has_metal):
-            Nmax[i] = 0
-        else:
-            caps = [W]
-            if has_cuda:
-                caps.append(max(0, float(d.d_avail_cuda) - float(d.c_gpu)))
-            if has_metal:
-                head = 1.0 if d.is_head else 0.0
-                caps.append(
-                    max(0, float(d.d_avail_metal) - float(d.c_gpu) - model.b_out * head)
-                )
-            Nmax[i] = max(0, int(min(caps)))
-
-    for y_pat in patterns:
-        # Variables: x = [w | n] of length 2M
-        def idx_w(i):
-            return i
-
-        def idx_n(i):
-            return M + i
-
-        Nvars = 2 * M
-
-        # Bounds
-        lb = np.zeros(Nvars)
-        ub = np.zeros(Nvars)
-        for i in range(M):
-            lb[idx_w(i)] = 1
-            ub[idx_w(i)] = W
             lb[idx_n(i)] = 0
-            ub[idx_n(i)] = Nmax[i]
-        bounds = Bounds(lb, ub)
+            ub[idx_n(i)] = 0
+        else:
+            lb[idx_n(i)] = 0
+            ub[idx_n(i)] = W
 
-        integrality = np.zeros(Nvars, dtype=int)
-        for i in range(M):
-            integrality[idx_w(i)] = 1
-            integrality[idx_n(i)] = 1
+        # Slacks default: [0, W] (in layers)
+        # If disk is too slow, forbid RAM-related overflows by fixing the slack to 0.
+        # Also fix to 0 if the device is not in the corresponding set.
+        in_M1 = i in sets.get("M1", [])
+        in_M2 = i in sets.get("M2", [])
+        in_M3 = i in sets.get("M3", [])
 
-        A_ub = []
-        b_ub = []
-        A_eq = []
-        b_eq = []
+        # s1 (M1 overflow in layers)
+        lb[idx_s1(i)] = 0
+        ub[idx_s1(i)] = (W if (in_M1 and not forced_zero[i]) else 0)
 
-        for i in range(M):
+        # s2 (M2 overflow in layers)
+        lb[idx_s2(i)] = 0
+        ub[idx_s2(i)] = (W if (in_M2 and not forced_zero[i]) else 0)
+
+        # s3 (M3 overflow in layers)
+        lb[idx_s3(i)] = 0
+        ub[idx_s3(i)] = (W if (in_M3 and not forced_zero[i]) else 0)
+
+        # t (VRAM overflow in layers) — always allowed up to W if any GPU backend exists,
+        # otherwise fix to 0. Tune via objective penalty to discourage unless necessary.
+        lb[idx_t(i)] = 0
+        ub[idx_t(i)] = (W if (has_cuda or has_metal) else 0)
+
+    bounds = Bounds(lb, ub)
+
+    integrality = np.ones(Nvars, dtype=int)  # all integers: w, n, s1, s2, s3, t
+
+    # ----------------------------
+    # Constraints
+    # ----------------------------
+    A_ub = []
+    b_ub = []
+    A_eq = []
+    b_eq = []
+
+    # n_i - w_i <= 0 (can't put more layers on GPU than assigned to device i)
+    for i in range(M):
+        row = np.zeros(Nvars)
+        row[idx_n(i)] = 1
+        row[idx_w(i)] = -1
+        A_ub.append(row)
+        b_ub.append(0.0)
+
+    # Sum w_i = W
+    row = np.zeros(Nvars)
+    for i in range(M):
+        row[idx_w(i)] = 1
+    A_eq.append(row)
+    b_eq.append(float(W))
+
+    def bcio(i: int) -> float:
+        return b_cio_b(devs[i], model)
+
+    # M1: b' * w_i <= d_avail_ram - bcio + b' * s1_i
+    for i in sets.get("M1", []):
+        rhs_cap = float(devs[i].d_avail_ram) - bcio(i)
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = bprime
+        row[idx_s1(i)] = -bprime
+        A_ub.append(row)
+        b_ub.append(rhs_cap)
+
+    # M2: b' * w_i <= d_avail_metal - bcio - c_gpu + b' * s2_i
+    for i in sets.get("M2", []):
+        dav_metal = float(devs[i].d_avail_metal or 0)
+        rhs_cap = dav_metal - bcio(i) - float(devs[i].c_gpu)
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = bprime
+        row[idx_s2(i)] = -bprime
+        A_ub.append(row)
+        b_ub.append(rhs_cap)
+
+    # M3: b' * (w_i - n_i) <= d_avail_ram + dswap - bcio + b' * s3_i
+    for i in sets.get("M3", []):
+        d = devs[i]
+        dswap = (min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0)
+        rhs_cap = float(d.d_avail_ram + dswap) - bcio(i)
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = bprime
+        row[idx_n(i)] = -bprime
+        row[idx_s3(i)] = -bprime
+        A_ub.append(row)
+        b_ub.append(rhs_cap)
+
+    # VRAM/shared caps with single overflow t_i used in both inequalities (no double charge)
+    for i, d in enumerate(devs):
+        has_cuda = bool(d.has_cuda and d.d_avail_cuda is not None)
+        has_metal = bool(d.has_metal and d.d_avail_metal is not None)
+        if has_cuda:
+            rhs = float(d.d_avail_cuda) - float(d.c_gpu)
             row = np.zeros(Nvars)
             row[idx_n(i)] = 1
-            row[idx_w(i)] = -1
+            row[idx_t(i)] = -1
             A_ub.append(row)
-            b_ub.append(0.0)
-
-        row = np.zeros(Nvars)
-        for i in range(M):
-            row[idx_w(i)] = 1
-        A_eq.append(row)
-        b_eq.append(float(W))
-
-        def bcio(i: int) -> float:
-            return b_cio_b(devs[i], model)
-
-        # M1: b' w_i <= d_avail_ram - bcio + disk_size*y_i
-        for i in sets.get("M1", []):
-            rhs = float(devs[i].d_avail_ram) - bcio(i) + disk_size * y_pat[i]
+            b_ub.append(rhs)
+        if has_metal:
+            head = 1.0 if d.is_head else 0.0
+            rhs = float(d.d_avail_metal) - float(d.c_gpu) - model.b_out * head
             row = np.zeros(Nvars)
-            row[idx_w(i)] = bprime
+            row[idx_n(i)] = 1
+            row[idx_t(i)] = -1
             A_ub.append(row)
             b_ub.append(rhs)
 
-        # M2: b' w_i <= d_avail_metal - bcio - c_gpu + disk_size*y_i
-        for i in sets.get("M2", []):
-            dav_metal = float(devs[i].d_avail_metal or 0)
-            rhs = dav_metal - bcio(i) - float(devs[i].c_gpu) + disk_size * y_pat[i]
-            row = np.zeros(Nvars)
-            row[idx_w(i)] = bprime
-            A_ub.append(row)
-            b_ub.append(rhs)
+    constraints = []
+    if A_ub:
+        A_ub = np.vstack(A_ub)
+        b_ub = np.asarray(b_ub, dtype=float)
+        constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))
+    if A_eq:
+        A_eq = np.vstack(A_eq)
+        b_eq = np.asarray(b_eq, dtype=float)
+        constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
 
-        # M3: b' w_i - b' n_i <= d_avail_ram + dswap - bcio + disk_size*y_i
-        for i in sets.get("M3", []):
-            d = devs[i]
-            dswap = (
-                min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
-            )
-            rhs = float(d.d_avail_ram + dswap) - bcio(i) + disk_size * y_pat[i]
-            row = np.zeros(Nvars)
-            row[idx_w(i)] = bprime
-            row[idx_n(i)] = -bprime
-            A_ub.append(row)
-            b_ub.append(rhs)
+    # ----------------------------
+    # Objective: base cost + penalties per overflowed layer
+    # ----------------------------
+    c_obj = np.zeros(Nvars)
+    for i in range(M):
+        # base terms
+        c_obj[idx_w(i)] = k * float(a[i])
+        c_obj[idx_n(i)] = k * float(b[i])
 
-        # (4) VRAM/shared bounds: n_i <= cap
-        for i, d in enumerate(devs):
-            # CUDA
-            if d.has_cuda and d.d_avail_cuda is not None:
-                rhs = float(d.d_avail_cuda) - float(d.c_gpu)
-                row = np.zeros(Nvars)
-                row[idx_n(i)] = 1
-                A_ub.append(row)
-                b_ub.append(rhs)
-            # Metal
-            if d.has_metal and d.d_avail_metal is not None:
-                head = 1.0 if d.is_head else 0.0
-                rhs = float(d.d_avail_metal) - float(d.c_gpu) - model.b_out * head
-                row = np.zeros(Nvars)
-                row[idx_n(i)] = 1
-                A_ub.append(row)
-                b_ub.append(rhs)
+        # per-layer overflow penalties
+        # Calibrate to prior logic: s1 and s3 ~ b' / s_disk, s2 ~ b_layer / s_disk
+        s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
+        penM1 = bprime / s_disk_i
+        penM2 = model.b_layer / s_disk_i
+        penM3 = bprime / s_disk_i
+        # VRAM oversubscription penalty per extra GPU layer (t_i).
+        penVRAM = penM2
 
-        constraints = []
-        if A_ub:
-            A_ub = np.vstack(A_ub)
-            b_ub = np.asarray(b_ub, dtype=float)
-            constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))
-        if A_eq:
-            A_eq = np.vstack(A_eq)
-            b_eq = np.asarray(b_eq, dtype=float)
-            constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
+        c_obj[idx_s1(i)] = k * penM1
+        c_obj[idx_s2(i)] = k * penM2
+        c_obj[idx_s3(i)] = k * penM3
+        c_obj[idx_t(i)]  = k * penVRAM
 
-        c_obj = np.zeros(Nvars)
-        for i in range(M):
-            coeff_w = float(a[i])
-            coeff_n = float(b[i])
-            # overload terms depending on case
-            if i in sets.get("M1", []):
-                coeff_w += (bprime / float(devs[i].s_disk)) * y_pat[i]
-            elif i in sets.get("M2", []):
-                coeff_w += (model.b_layer / float(devs[i].s_disk)) * y_pat[i]
-            elif i in sets.get("M3", []):
-                coeff_w += (bprime / float(devs[i].s_disk)) * y_pat[i]
-                coeff_n += -(bprime / float(devs[i].s_disk)) * y_pat[i]
-            # M4: no extra term
-            c_obj[idx_w(i)] = k * coeff_w
-            c_obj[idx_n(i)] = k * coeff_n
+    options = {}
+    if time_limit is not None:
+        options["time_limit"] = float(time_limit)
+    if mip_gap is not None:
+        options["mip_rel_gap"] = float(mip_gap)
 
-        options = {}
-        if time_limit is not None:
-            options["time_limit"] = float(time_limit)
-        if mip_gap is not None:
-            options["mip_rel_gap"] = float(mip_gap)
+    res = milp(
+        c=c_obj,
+        integrality=integrality,
+        bounds=bounds,
+        constraints=constraints,
+        options=options,
+    )
+    if not res.success:
+        raise RuntimeError("No feasible MINLP found.")
 
-        res = milp(
-            c=c_obj,
-            integrality=integrality,
-            bounds=bounds,
-            constraints=constraints,
-            options=options,
-        )
-        if not res.success:
-            continue
+    x = res.x
 
-        x = res.x
-        w_sol = [int(round(x[idx_w(i)])) for i in range(M)]
-        n_sol = [int(round(x[idx_n(i)])) for i in range(M)]
+    w_sol = [int(round(x[idx_w(i)])) for i in range(M)]
+    n_sol = [int(round(x[idx_n(i)])) for i in range(M)]
 
-        # Full objective value with constants
-        linear_val = float(c_obj.dot(x))
-        obj_value = linear_val + k * sum(float(ci) for ci in c_vec) + kappa
+    # Full objective value with constants
+    linear_val = float(c_obj.dot(x))
+    obj_value = linear_val + k * sum(float(ci) for ci in c_vec) + kappa
 
-        if (best_obj is None) or (obj_value < best_obj):
-            best_obj = obj_value
-            best_sol = (w_sol, n_sol)
-            best_y = y_pat
-
-    if best_sol is None:
-        raise RuntimeError("No feasible MINLP found for any y pattern (SciPy).")
-
-    w_sol, n_sol = best_sol
-    for i, (w_i, n_i, y_i) in enumerate(zip(w_sol, n_sol, best_y)):
+    # Optional: print only nonzero decisions
+    for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
         if w_i > 0:
             print(f"w[{i}] {float(w_i)}")
         if n_i > 0:
             print(f"n[{i}] {float(n_i)}")
-        if y_i > 0:
-            print(f"y[{i}] {float(y_i)}")
 
-    return ILPResult(k=k, w=w_sol, n=n_sol, obj_value=float(best_obj))
+    return ILPResult(k=k, w=w_sol, n=n_sol, obj_value=float(obj_value))
 
 
 def _print_sets(
@@ -277,7 +302,7 @@ def halda_solve(
     for kf in Ks:
         try:
             print("k: " + str(kf))
-            res = solve_fixed_k_minlp(
+            res = solve_fixed_k_milp(
                 devs,
                 model,
                 sets,
