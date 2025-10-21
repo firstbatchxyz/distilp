@@ -187,7 +187,7 @@ def solve_fixed_k_milp(
             rhs = float(d.d_avail_cuda) - float(d.c_gpu)
             row = np.zeros(Nvars)
             row[idx_n(i)] = 1
-            row[idx_t(i)] = -1
+            row[idx_t(i)] = -bprime
             A_ub.append(row)
             b_ub.append(rhs)
         if has_metal:
@@ -195,7 +195,7 @@ def solve_fixed_k_milp(
             rhs = float(d.d_avail_metal) - float(d.c_gpu) - model.b_out * head
             row = np.zeros(Nvars)
             row[idx_n(i)] = 1
-            row[idx_t(i)] = -1
+            row[idx_t(i)] = -bprime
             A_ub.append(row)
             b_ub.append(rhs)
 
