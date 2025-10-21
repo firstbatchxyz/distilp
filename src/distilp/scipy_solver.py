@@ -23,7 +23,7 @@ from .components.dense_common import (
 )
 
 
-def solve_fixed_k_ilp(
+def solve_fixed_k_minlp(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
@@ -228,7 +228,7 @@ def solve_fixed_k_ilp(
             best_y = y_pat
 
     if best_sol is None:
-        raise RuntimeError("No feasible MILP found for any y pattern (SciPy).")
+        raise RuntimeError("No feasible MINLP found for any y pattern (SciPy).")
 
     w_sol, n_sol = best_sol
     for i, (w_i, n_i, y_i) in enumerate(zip(w_sol, n_sol, best_y)):
@@ -277,7 +277,7 @@ def halda_solve(
     for kf in Ks:
         try:
             print("k: " + str(kf))
-            res = solve_fixed_k_ilp(
+            res = solve_fixed_k_minlp(
                 devs,
                 model,
                 sets,
