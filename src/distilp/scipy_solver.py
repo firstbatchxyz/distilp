@@ -1,10 +1,9 @@
 """
-HALDA end-to-end (parameters + Algorithm 1 with Gurobi), using the same notation as the paper.
+HALDA with SciPy.
 """
 
 from __future__ import annotations
 from typing import Iterable, List, Optional, Tuple, Dict
-import itertools
 import numpy as np
 from scipy.optimize import milp, Bounds, LinearConstraint
 from .components.plotter import plot_k_curve
@@ -37,14 +36,10 @@ def solve_fixed_k_milp(
     M = len(devs)
     W = model.L // k
     bprime = b_prime(model)
-    disk_speed_threshold = 51446428
 
-    # Coefficients and constants (same as Gurobi version)
+    # Coefficients and constants
     a, b, c_vec = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
-
-    # Determine which devices have too-slow disks (overflow not allowed)
-    forced_zero = [int(d.s_disk < disk_speed_threshold) for d in devs]
 
     # ----------------------------
     # Variable indexing
@@ -77,7 +72,7 @@ def solve_fixed_k_milp(
     ub = np.zeros(Nvars)
 
     # n upper bounds: allow up to W layers unless the device has no GPU backend at all
-    # slacks are in LAYERS (integers): [0, W], but can be forced to 0 by slow-disk policy
+    # slacks are in LAYERS (integers): [0, W]
 
     for i, d in enumerate(devs):
         # w: at least 1 layer on each active device as before, up to W
@@ -95,7 +90,6 @@ def solve_fixed_k_milp(
             ub[idx_n(i)] = W
 
         # Slacks default: [0, W] (in layers)
-        # If disk is too slow, forbid RAM-related overflows by fixing the slack to 0.
         # Also fix to 0 if the device is not in the corresponding set.
         in_M1 = i in sets.get("M1", [])
         in_M2 = i in sets.get("M2", [])
@@ -103,20 +97,20 @@ def solve_fixed_k_milp(
 
         # s1 (M1 overflow in layers)
         lb[idx_s1(i)] = 0
-        ub[idx_s1(i)] = (W if (in_M1 and not forced_zero[i]) else 0)
+        ub[idx_s1(i)] = W if in_M1 else 0
 
         # s2 (M2 overflow in layers)
         lb[idx_s2(i)] = 0
-        ub[idx_s2(i)] = (W if (in_M2 and not forced_zero[i]) else 0)
+        ub[idx_s2(i)] = W if in_M2 else 0
 
         # s3 (M3 overflow in layers)
         lb[idx_s3(i)] = 0
-        ub[idx_s3(i)] = (W if (in_M3 and not forced_zero[i]) else 0)
+        ub[idx_s3(i)] = W if in_M3 else 0
 
         # t (VRAM overflow in layers) — always allowed up to W if any GPU backend exists,
-        # otherwise fix to 0. Tune via objective penalty to discourage unless necessary.
+        # otherwise fixed to 0.
         lb[idx_t(i)] = 0
-        ub[idx_t(i)] = (W if (has_cuda or has_metal) else 0)
+        ub[idx_t(i)] = W if (has_cuda or has_metal) else 0
 
     bounds = Bounds(lb, ub)
 
@@ -150,7 +144,7 @@ def solve_fixed_k_milp(
 
     # M1: b' * w_i <= d_avail_ram - bcio + b' * s1_i
     for i in sets.get("M1", []):
-        rhs_cap = float(devs[i].d_avail_ram) - bcio(i)
+        rhs_cap = float(devs[i].d_avail_ram) - float(bcio(i))
         row = np.zeros(Nvars)
         row[idx_w(i)] = bprime
         row[idx_s1(i)] = -bprime
@@ -159,8 +153,8 @@ def solve_fixed_k_milp(
 
     # M2: b' * w_i <= d_avail_metal - bcio - c_gpu + b' * s2_i
     for i in sets.get("M2", []):
-        dav_metal = float(devs[i].d_avail_metal or 0)
-        rhs_cap = dav_metal - bcio(i) - float(devs[i].c_gpu)
+        dav_metal = float(devs[i].d_avail_metal)
+        rhs_cap = dav_metal - float(bcio(i)) - float(devs[i].c_gpu)
         row = np.zeros(Nvars)
         row[idx_w(i)] = bprime
         row[idx_s2(i)] = -bprime
@@ -171,7 +165,7 @@ def solve_fixed_k_milp(
     for i in sets.get("M3", []):
         d = devs[i]
         dswap = (min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0)
-        rhs_cap = float(d.d_avail_ram + dswap) - bcio(i)
+        rhs_cap = float(d.d_avail_ram + dswap) - float(bcio(i))
         row = np.zeros(Nvars)
         row[idx_w(i)] = bprime
         row[idx_n(i)] = -bprime
@@ -186,15 +180,15 @@ def solve_fixed_k_milp(
         if has_cuda:
             rhs = float(d.d_avail_cuda) - float(d.c_gpu)
             row = np.zeros(Nvars)
-            row[idx_n(i)] = 1
+            row[idx_n(i)] = bprime
             row[idx_t(i)] = -bprime
             A_ub.append(row)
             b_ub.append(rhs)
         if has_metal:
             head = 1.0 if d.is_head else 0.0
-            rhs = float(d.d_avail_metal) - float(d.c_gpu) - model.b_out * head
             row = np.zeros(Nvars)
-            row[idx_n(i)] = 1
+            rhs = float(d.d_avail_metal) - float(d.c_gpu) - float(model.b_out * head)
+            row[idx_n(i)] = bprime
             row[idx_t(i)] = -bprime
             A_ub.append(row)
             b_ub.append(rhs)
@@ -218,14 +212,16 @@ def solve_fixed_k_milp(
         c_obj[idx_w(i)] = k * float(a[i])
         c_obj[idx_n(i)] = k * float(b[i])
 
-        # per-layer overflow penalties
-        # Calibrate to prior logic: s1 and s3 ~ b' / s_disk, s2 ~ b_layer / s_disk
+        # per-layer overflow penalties for RAM
         s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
         penM1 = bprime / s_disk_i
         penM2 = model.b_layer / s_disk_i
         penM3 = bprime / s_disk_i
-        # VRAM oversubscription penalty per extra GPU layer (t_i).
-        penVRAM = penM2
+        # VRAM - disk offloading penalty per extra GPU layer (t_i).
+        if i in sets.get("M2", []):
+            penVRAM = penM2
+        else:
+            penVRAM = penM3
 
         c_obj[idx_s1(i)] = k * penM1
         c_obj[idx_s2(i)] = k * penM2
@@ -246,7 +242,7 @@ def solve_fixed_k_milp(
         options=options,
     )
     if not res.success:
-        raise RuntimeError("No feasible MINLP found.")
+        raise RuntimeError("No feasible MILP found.")
 
     x = res.x
 
@@ -257,7 +253,7 @@ def solve_fixed_k_milp(
     linear_val = float(c_obj.dot(x))
     obj_value = linear_val + k * sum(float(ci) for ci in c_vec) + kappa
 
-    # Optional: print only nonzero decisions
+    # Optional: print only non-zero decision variables
     for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
         if w_i > 0:
             print(f"w[{i}] {float(w_i)}")
@@ -270,7 +266,7 @@ def solve_fixed_k_milp(
 def _print_sets(
     label: str, sets: Dict[str, List[int]], devs: List[DeviceProfile]
 ) -> None:
-    """Pretty-print M1..M4 with device names."""
+    """Pretty-print M1..M3 with device names."""
 
     def names(idxs: List[int]) -> List[str]:
         return [devs[i].name for i in sorted(idxs)]
@@ -289,7 +285,7 @@ def halda_solve(
     plot: bool = True,
 ) -> HALDAResult:
     """
-    HALDA end-to-end (parameters + Algorithm 1 with Gurobi or SciPy MILP).
+    HALDA with SciPy MILP.
     """
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
     best: Optional[HALDAResult] = None
@@ -318,7 +314,7 @@ def halda_solve(
             per_k_objs.append((kf, None))
             print(f"  k={kf:<4d}  obj=infeasible")
     if best_this_round is None:
-        raise RuntimeError("No feasible ILP found for any k this round.")
+        raise RuntimeError("No feasible MILP found for any k this round.")
 
     # ----- line 16: accept the best (w*, n*) this round -----
     w = list(best_this_round.w)
