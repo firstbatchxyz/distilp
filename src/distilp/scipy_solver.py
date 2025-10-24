@@ -63,7 +63,13 @@ def solve_fixed_k_milp(
     def idx_t(i):
         return 5 * M + i
 
-    Nvars = 6 * M
+    # NEW: stall variables z_i and global cycle time C
+    def idx_z(i):
+        return 6 * M + i
+
+    idx_C = 7 * M  # scalar index for cycle time
+
+    Nvars = 7 * M + 1
 
     # ----------------------------
     # Bounds & integrality
@@ -112,9 +118,20 @@ def solve_fixed_k_milp(
         lb[idx_t(i)] = 0
         ub[idx_t(i)] = W if (has_cuda or has_metal) else 0
 
+    # NEW: bounds for stall z_i and cycle time C
+    for i in range(M):
+        lb[idx_z(i)] = 0.0
+        ub[idx_z(i)] = np.inf
+    lb[idx_C] = 0.0
+    ub[idx_C] = np.inf
+
     bounds = Bounds(lb, ub)
 
-    integrality = np.ones(Nvars, dtype=int)  # all integers: w, n, s1, s2, s3, t
+    integrality = np.ones(Nvars, dtype=int)  # integers by default
+    # NEW: make z_i and C continuous
+    for i in range(M):
+        integrality[idx_z(i)] = 0
+    integrality[idx_C] = 0
 
     # ----------------------------
     # Constraints
@@ -141,6 +158,35 @@ def solve_fixed_k_milp(
 
     def bcio(i: int) -> float:
         return b_cio_b(devs[i], model)
+
+    # --- NEW helpers for cycle-time + prefetch modeling ---
+    def busy_row_for(i: int) -> np.ndarray:
+        s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
+        penM1 = bprime / s_disk_i
+        penM2 = model.b_layer / s_disk_i
+        penM3 = bprime / s_disk_i
+        if i in sets.get("M2", []):
+            penVRAM = penM2
+        else:
+            penVRAM = penM3
+
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = float(a[i])   # sec/layer including comms
+        row[idx_n(i)] = float(b[i])   # (can be negative) GPU delta
+        row[idx_s1(i)] = float(penM1)
+        row[idx_s2(i)] = float(penM2)
+        row[idx_s3(i)] = float(penM3)
+        row[idx_t(i)]  = float(penVRAM)
+        return row
+
+    def fetch_row_for(i: int) -> np.ndarray:
+        # F_i = w_i * (bprime / s_disk_i)
+        s_disk_i = max(1.0, float(devs[i].s_disk))
+        coef = bprime / s_disk_i
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = coef
+
+        return row
 
     # M1: b' * w_i <= d_avail_ram - bcio + b' * s1_i
     for i in sets.get("M1", []):
@@ -193,6 +239,25 @@ def solve_fixed_k_milp(
             A_ub.append(row)
             b_ub.append(rhs)
 
+    # --- NEW: cycle time C and stall z_i constraints per device ---
+    # For each i: (1) C >= B_i + z_i ; (2) z_i >= F_i - (C - B_i)
+    for i in range(M):
+        # (1) C >= B_i + z_i  ->  -B_i - z_i + C >= 0  -> add as <= 0 by multiplying -1
+        row1 = -busy_row_for(i)
+        row1[idx_z(i)] += -1.0
+        row1[idx_C]    +=  1.0
+        A_ub.append(-row1)
+        b_ub.append(0.0)
+
+        # (2) z_i >= F_i - (C - B_i) -> z_i - B_i + C - F_i >= 0 -> add as <= 0 with -1
+        row2 = np.zeros(Nvars)
+        row2[idx_z(i)] = 1.0
+        row2[idx_C]    = 1.0
+        row2 -= busy_row_for(i)
+        row2 -= fetch_row_for(i)  # bring F_i to LHS
+        A_ub.append(-row2)
+        b_ub.append(0.0)
+
     constraints = []
     if A_ub:
         A_ub = np.vstack(A_ub)
@@ -204,29 +269,31 @@ def solve_fixed_k_milp(
         constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
 
     # ----------------------------
-    # Objective: base cost + penalties per overflowed layer
+    # Objective: minimize cycle time C + penalties
     # ----------------------------
     c_obj = np.zeros(Nvars)
-    for i in range(M):
-        # base terms
-        c_obj[idx_w(i)] = k * float(a[i])
-        c_obj[idx_n(i)] = k * float(b[i])
+    # Minimize k * C (steady-state cycle time scaled by k)
+    c_obj[idx_C] = float(k-1)
 
-        # per-layer overflow penalties for RAM
+    for i in range(M):
+        # No direct cost on w_i or n_i; they influence objective via C through constraints
+        c_obj[idx_w(i)] = float(a[i])
+        c_obj[idx_n(i)] = float(b[i])
+
+        # per-layer overflow penalties for RAM / VRAM (unchanged)
         s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
         penM1 = bprime / s_disk_i
         penM2 = model.b_layer / s_disk_i
         penM3 = bprime / s_disk_i
-        # VRAM - disk offloading penalty per extra GPU layer (t_i).
         if i in sets.get("M2", []):
             penVRAM = penM2
         else:
             penVRAM = penM3
 
-        c_obj[idx_s1(i)] = k * penM1
-        c_obj[idx_s2(i)] = k * penM2
-        c_obj[idx_s3(i)] = k * penM3
-        c_obj[idx_t(i)]  = k * penVRAM
+        c_obj[idx_s1(i)] = penM1
+        c_obj[idx_s2(i)] = penM2
+        c_obj[idx_s3(i)] = penM3
+        c_obj[idx_t(i)]  = penVRAM
 
     options = {}
     if time_limit is not None:
