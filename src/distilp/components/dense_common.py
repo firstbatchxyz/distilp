@@ -120,9 +120,13 @@ def alpha_beta_xi(
 
     # ξ_m (traffic + comm)
     # dev.t_ram2vram + dev.t_vram2ram is done once per round as it is done for sequence of layers within a window.
+    # xi = (dev.t_ram2vram + dev.t_vram2ram) * (
+    #     0 if dev.is_unified_mem else 1
+    # ) + dev.t_comm
+
     xi = (dev.t_ram2vram + dev.t_vram2ram) * (
         0 if dev.is_unified_mem else 1
-    ) + dev.t_comm
+    )
     return alpha, beta, xi
 
 

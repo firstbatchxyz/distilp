@@ -40,6 +40,7 @@ def solve_fixed_k_milp(
     # Coefficients and constants
     a, b, c_vec = objective_vectors(devs, model, sets)
     kappa = kappa_constant(devs, model, sets)
+    total_inter_comm_time_per_round = 0
 
     # ----------------------------
     # Variable indexing
@@ -118,6 +119,8 @@ def solve_fixed_k_milp(
         lb[idx_t(i)] = 0
         ub[idx_t(i)] = W if (has_cuda or has_metal) else 0
 
+        total_inter_comm_time_per_round += d.t_comm
+
     # NEW: bounds for stall z_i and cycle time C
     for i in range(M):
         lb[idx_z(i)] = 0.0
@@ -171,6 +174,8 @@ def solve_fixed_k_milp(
             penVRAM = penM3
 
         row = np.zeros(Nvars)
+        row += devs[i].t_comm
+        row += c_vec[i]
         row[idx_w(i)] = float(a[i])   # sec/layer including comms
         row[idx_n(i)] = float(b[i])   # (can be negative) GPU delta
         row[idx_s1(i)] = float(penM1)
@@ -318,7 +323,7 @@ def solve_fixed_k_milp(
 
     # Full objective value with constants
     linear_val = float(c_obj.dot(x))
-    obj_value = linear_val + k * sum(float(ci) for ci in c_vec) + kappa
+    obj_value = linear_val + total_inter_comm_time_per_round + sum(float(ci) for ci in c_vec) + kappa
 
     # Optional: print only non-zero decision variables
     for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
