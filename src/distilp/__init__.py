@@ -1,8 +1,8 @@
 """
-HALDA Solver - Distributed LLM Inference Optimization Library
+DistilP: A Python package for solving layer assignment problems in distributed inference
 """
 
-from .scipy_solver import halda_solve
+from .halda_p_solver import halda_solve
 from .components.dataclasses import DeviceProfile, ModelProfile
 from .components.loader import (
     load_device,
@@ -23,4 +23,4 @@ __all__ = [
     "load_device_profile_from_dict",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.2"

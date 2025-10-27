@@ -27,7 +27,7 @@ class DeviceProfile:
     scpu: QuantPerf  # s^{cpu}_{m,q}
     T_cpu: float  # T^{cpu}_m (register loading throughput, bytes/s)
 
-    # KV-copy times (sec) for a fixed 2*(h_k e_k + h_v e_v)�n_kv byte payload
+    # KV-copy times (sec) for a fixed kv_bits *(h_k e_k + h_v e_v) * n_kv byte payload
     t_kvcpy_cpu: float  # t^{kv_cpy,cpu}_m
     t_kvcpy_gpu: float  # t^{kv_cpy,gpu}_m
 

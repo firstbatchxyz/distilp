@@ -15,7 +15,7 @@ from src.distilp.components.loader import (
     load_from_profile_folder,
 )
 from src.distilp.components.dataclasses import DeviceProfile, ModelProfile
-from src.distilp.scipy_solver import halda_solve
+from src.distilp.halda_p_solver import halda_solve
 
 
 def print_device_summary(devices: List[DeviceProfile]) -> None:
@@ -208,6 +208,7 @@ Examples:
             model,
             mip_gap=args.mip_gap,
             plot=not args.no_plot,
+            kv_bits="4bit"
         )
 
         # Print solution

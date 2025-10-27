@@ -22,11 +22,17 @@ def valid_factors_of_L(L: int) -> List[int]:
     return sorted(set(fs))
 
 
-def b_prime(model: ModelProfile) -> int:
+def b_prime(model: ModelProfile, kv_bits_k: float = 1.0, kv_bits_v: float | None = None) -> int:
     """
-    b' = b + 2(h_k e_k + h_v e_v) · n_kv.  [App. A.3, after Assumption 1]
+    b' = b + (h_k * e_k * kv_bits_k + h_v * e_v * kv_bits_v) · n_kv.
+
+    Use default kv bits as 1.0 for both k and v if kv_bits_v is not provided.
+    Assuming 8bit quantization by default.
     """
-    return model.b_layer + 2 * (model.hk * model.ek + model.hv * model.ev) * model.n_kv
+    kv_bits_v = kv_bits_k if kv_bits_v is None else kv_bits_v
+    elems_k = model.hk * model.ek * model.n_kv
+    elems_v = model.hv * model.ev * model.n_kv
+    return int(model.b_layer + kv_bits_k * elems_k + kv_bits_v * elems_v)
 
 
 def _sum_f_over_S(
@@ -36,7 +42,7 @@ def _sum_f_over_S(
     batch_size: int = 1,
 ) -> float:
     """
-    Helper: ∑_{q ∈ Q} f_q / S_q   (used in α_m and β_m)
+    Helper: SUM_{q ∈ Q} f_q / S_q   (used in α_m and β_m)
     Now handles batch sizes in S_by_q (device performance data)
     batch_size: integer batch size (e.g., 1, 2, 4) - will be converted to "b_1", "b_2", etc.
     """
@@ -91,16 +97,12 @@ def _pick_T_gpu(dev: DeviceProfile) -> Optional[float]:
 
 
 def alpha_beta_xi(
-    dev: DeviceProfile, model: ModelProfile
+    dev: DeviceProfile, model: ModelProfile, kv_factor: float = 1.0
 ) -> Tuple[float, float, float]:
     """
     α_m, β_m, ξ_m exactly as defined under Assumption 1.  [App. A.3, Eq. 21 block]
-      α_m =  Σ_q f_q/scpu_q  + t^{kv_cpy,cpu}_m + b'/T^{cpu}_m
-      β_m =  Σ_q f_q/sgpu_q  - Σ_q f_q/scpu_q + (t^{kv_cpy,gpu}_m - t^{kv_cpy,cpu}_m)
-             + (b'/T^{gpu}_m - b'/T^{cpu}_m)    (0 if no GPU path)
-      ξ_m =  (t^{ram->vram}_m + t^{vram->ram}_m)·(1 - I_{UMA}) + t^{comm}_m
     """
-    bprime = b_prime(model)
+    bprime = b_prime(model, kv_bits_k=kv_factor)
     # α_m (CPU path)
     comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)
     alpha = comp_cpu + dev.t_kvcpy_cpu + (bprime / dev.T_cpu)
@@ -117,12 +119,6 @@ def alpha_beta_xi(
         )
     else:
         beta = 0.0
-
-    # ξ_m (traffic + comm)
-    # dev.t_ram2vram + dev.t_vram2ram is done once per round as it is done for sequence of layers within a window.
-    # xi = (dev.t_ram2vram + dev.t_vram2ram) * (
-    #     0 if dev.is_unified_mem else 1
-    # ) + dev.t_comm
 
     xi = (dev.t_ram2vram + dev.t_vram2ram) * (
         0 if dev.is_unified_mem else 1
@@ -184,6 +180,7 @@ def objective_vectors(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
+    kv_factor: float = 1.0,
 ) -> Tuple[List[float], List[float], List[float]]:
     """
     Build a, b, c as in the vectorized form (block right after ILFP).  [App. A.3]
@@ -202,8 +199,8 @@ def objective_vectors(
     c: List[float] = [0.0] * len(devs)
 
     for i, d in enumerate(devs):
-        alpha, beta, xi = alpha_beta_xi(d, model)
-        print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
+        alpha, beta, xi = alpha_beta_xi(d, model, kv_factor)
+        #print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
             a[i] = alpha
@@ -225,11 +222,6 @@ def kappa_constant(
 ) -> float:
     """
     κ aggregates the constant parts in Eq. (21) that do not multiply l_m, n_m, or W_m.  [App. A.3]
-    Specifically we include:
-      - head-only constants: ∑_q f_{1,out}/s^{cpu}_{1,q} + (b_i/V + b_o)/T^{cpu}_1
-                             + b_i/(V s^{disk}_1) + b_o/s^{disk}_1 · I_{1 ∉ M4}
-      - per-device constants for m ∈ (M1 ∪ M3):
-                             (c^{cpu} - d^{avail}_m - d^{swapout}_m·I_{Android}) / s^{disk}_m
     """
     # Identify head device index (first with is_head) or default to index 0.
     head_idx = next((i for i, d in enumerate(devs) if d.is_head), 0)
@@ -256,13 +248,13 @@ class ILPResult:
     k: int
     w: List[int]
     n: List[int]
-    obj_value: float  # reported objective value for comparison across k
+    obj_value: float
 
 
 @dataclass
 class HALDAResult:
-    w: List[int]  # w* (layer windows per device)
-    n: List[int]  # n* (GPU layers per device)
-    k: int  # best k
-    obj_value: float  # objective value for the best (w*,n*,k)
-    sets: Dict[str, List[int]]  # final sets M1..M4
+    w: List[int]
+    n: List[int]
+    k: int
+    obj_value: float
+    sets: Dict[str, List[int]]

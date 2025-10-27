@@ -25,7 +25,7 @@
     "t_ram2vram": 0,
     "t_vram2ram": 0,
     "t_comm": 0,
-    "s_disk": 6030508375.770821,
+    "s_disk": 5030508375.770821,
     "d_avail_ram": 25679255040,
     "sgpu_cuda": null,
     "sgpu_metal": {
@@ -45,7 +45,7 @@
     "T_cuda": null,
     "T_metal": 489883044442.67255,
     "d_avail_cuda": null,
-    "d_avail_metal": 25679255040,
+    "d_avail_metal": 15679255040,
     "c_cpu": 0,
     "c_gpu": 0,
     "d_bytes_can_swap": 0,
