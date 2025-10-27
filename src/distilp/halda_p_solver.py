@@ -1,5 +1,19 @@
 """
 HALDA with SciPy.
+
+This is a slightly modified version of the HALDA solver from Prima.CPP implemented in Scipy
+refining the mathematical model suggested by introducing cycle time which more accurately
+accounts for inter-device overlap and fits to Apple UMA.
+
+@misc{li2025primacppfast3070bllm,
+      title={Prima.cpp: Fast 30-70B LLM Inference on Heterogeneous and Low-Resource Home Clusters},
+      author={Zonghang Li and Tao Li and Wenjiao Feng and Rongxing Xiao and Jianshu She and Hong Huang and Mohsen Guizani and Hongfang Yu and Qirong Ho and Wei Xiang and Steve Liu},
+      year={2025},
+      eprint={2504.08791},
+      archivePrefix={arXiv},
+      primaryClass={cs.DC},
+      url={https://arxiv.org/abs/2504.08791},
+}
 """
 
 from __future__ import annotations
@@ -22,11 +36,32 @@ from .components.dense_common import (
 )
 
 
+def _kv_bits_to_factor(kv_bits: str) -> float:
+    """
+    Map kv_bits string to a scalar factor for KV size.
+
+    Accepted values:
+    - '4bit' -> 0.5
+    - '8bit' -> 1.0
+    - 'fp16' or 'bf16' -> 2.0
+    Any other value raises ValueError.
+    """
+    s = kv_bits.strip().lower()
+    if s == "4bit":
+        return 0.5
+    if s == "8bit":
+        return 1.0
+    if s in ("fp16", "bf16"):
+        return 2.0
+    raise ValueError(f"Unsupported kv_bits '{kv_bits}'. Use one of: 4bit, 8bit, fp16, bf16")
+
+
 def solve_fixed_k_milp(
     devs: List[DeviceProfile],
     model: ModelProfile,
     sets: Dict[str, List[int]],
     k: int,
+    kv_factor: float,
     time_limit: Optional[float] = None,
     mip_gap: Optional[float] = 1e-4,
 ) -> ILPResult:
@@ -35,16 +70,13 @@ def solve_fixed_k_milp(
     """
     M = len(devs)
     W = model.L // k
-    bprime = b_prime(model)
+    bprime = b_prime(model, kv_bits_k=kv_factor)
 
     # Coefficients and constants
-    a, b, c_vec = objective_vectors(devs, model, sets)
+    a, b, c_vec = objective_vectors(devs, model, sets, kv_factor)
     kappa = kappa_constant(devs, model, sets)
     total_inter_comm_time_per_round = 0
 
-    # ----------------------------
-    # Variable indexing
-    # ----------------------------
     # x = [ w(0..M-1) | n(0..M-1) | s1(0..M-1) | s2(0..M-1) | s3(0..M-1) | t(0..M-1) ]
     def idx_w(i):
         return i
@@ -72,9 +104,7 @@ def solve_fixed_k_milp(
 
     Nvars = 7 * M + 1
 
-    # ----------------------------
     # Bounds & integrality
-    # ----------------------------
     lb = np.zeros(Nvars)
     ub = np.zeros(Nvars)
 
@@ -136,9 +166,8 @@ def solve_fixed_k_milp(
         integrality[idx_z(i)] = 0
     integrality[idx_C] = 0
 
-    # ----------------------------
+    
     # Constraints
-    # ----------------------------
     A_ub = []
     b_ub = []
     A_eq = []
@@ -162,7 +191,7 @@ def solve_fixed_k_milp(
     def bcio(i: int) -> float:
         return b_cio_b(devs[i], model)
 
-    # --- NEW helpers for cycle-time + prefetch modeling ---
+    # Helpers for cycle-time + prefetch modeling
     def busy_row_for(i: int) -> np.ndarray:
         s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
         penM1 = bprime / s_disk_i
@@ -244,7 +273,7 @@ def solve_fixed_k_milp(
             A_ub.append(row)
             b_ub.append(rhs)
 
-    # --- NEW: cycle time C and stall z_i constraints per device ---
+    # Cycle time C and stall z_i constraints per device
     # For each i: (1) C >= B_i + z_i ; (2) z_i >= F_i - (C - B_i)
     for i in range(M):
         # (1) C >= B_i + z_i  ->  -B_i - z_i + C >= 0  -> add as <= 0 by multiplying -1
@@ -273,9 +302,8 @@ def solve_fixed_k_milp(
         b_eq = np.asarray(b_eq, dtype=float)
         constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
 
-    # ----------------------------
+    
     # Objective: minimize cycle time C + penalties
-    # ----------------------------
     c_obj = np.zeros(Nvars)
     # Minimize k * C (steady-state cycle time scaled by k)
     c_obj[idx_C] = float(k-1)
@@ -326,27 +354,13 @@ def solve_fixed_k_milp(
     obj_value = linear_val + total_inter_comm_time_per_round + sum(float(ci) for ci in c_vec) + kappa
 
     # Optional: print only non-zero decision variables
-    for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
-        if w_i > 0:
-            print(f"w[{i}] {float(w_i)}")
-        if n_i > 0:
-            print(f"n[{i}] {float(n_i)}")
+    #for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
+    #    if w_i > 0:
+    #        print(f"w[{i}] {float(w_i)}")
+    #    if n_i > 0:
+    #        print(f"n[{i}] {float(n_i)}")
 
     return ILPResult(k=k, w=w_sol, n=n_sol, obj_value=float(obj_value))
-
-
-def _print_sets(
-    label: str, sets: Dict[str, List[int]], devs: List[DeviceProfile]
-) -> None:
-    """Pretty-print M1..M3 with device names."""
-
-    def names(idxs: List[int]) -> List[str]:
-        return [devs[i].name for i in sorted(idxs)]
-
-    print(f"\n{label} sets:")
-    print(f"  M1: {names(sets.get('M1', []))}")
-    print(f"  M2: {names(sets.get('M2', []))}")
-    print(f"  M3: {names(sets.get('M3', []))}")
 
 
 def halda_solve(
@@ -355,40 +369,47 @@ def halda_solve(
     k_candidates: Optional[Iterable[int]] = None,
     mip_gap: Optional[float] = 1e-4,
     plot: bool = True,
+    debug: bool = False,
+    kv_bits: str = "8bit",
 ) -> HALDAResult:
     """
     HALDA with SciPy MILP.
     """
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
+    kv_factor = _kv_bits_to_factor(kv_bits)
     best: Optional[HALDAResult] = None
 
     sets = assign_sets(devs)
 
     best_this_round: Optional[ILPResult] = None
     per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
-    print("Objectives by k")
+    if debug:
+        print("Objectives by k")
     for kf in Ks:
         try:
-            print("k: " + str(kf))
+            if debug:
+                print("k: " + str(kf))
             res = solve_fixed_k_milp(
                 devs,
                 model,
                 sets,
                 kf,
+                kv_factor,
                 time_limit=3600,
                 mip_gap=mip_gap,
             )
             per_k_objs.append((kf, res.obj_value))
-            print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
+            if debug:
+                print(f"  k={kf:<4d}  obj={res.obj_value:.6f}")
             if (best_this_round is None) or (res.obj_value < best_this_round.obj_value):
                 best_this_round = res
         except RuntimeError:
             per_k_objs.append((kf, None))
-            print(f"  k={kf:<4d}  obj=infeasible")
+            if debug:
+                print(f"  k={kf:<4d}  obj=infeasible")
     if best_this_round is None:
         raise RuntimeError("No feasible MILP found for any k this round.")
 
-    # ----- line 16: accept the best (w*, n*) this round -----
     w = list(best_this_round.w)
     n = list(best_this_round.n)
 
