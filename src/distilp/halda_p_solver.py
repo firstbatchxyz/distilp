@@ -21,6 +21,7 @@ from typing import Iterable, List, Optional, Tuple, Dict
 import numpy as np
 from scipy.optimize import milp, Bounds, LinearConstraint
 from .components.plotter import plot_k_curve
+import logging
 
 from .components.dense_common import (
     b_cio_b,
@@ -35,6 +36,7 @@ from .components.dense_common import (
     HALDAResult,
 )
 
+logger = logging.getLogger(__name__)
 
 def _kv_bits_to_factor(kv_bits: str) -> float:
     """
@@ -383,12 +385,10 @@ def halda_solve(
 
     best_this_round: Optional[ILPResult] = None
     per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
-    if debug:
-        print("Objectives by k")
+    logger.debug("Objectives by k")
     for kf in Ks:
         try:
-            if debug:
-                print("k: " + str(kf))
+            logger.debug("k: %d", kf)
             res = solve_fixed_k_milp(
                 devs,
                 model,

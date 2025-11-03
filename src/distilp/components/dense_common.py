@@ -2,9 +2,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Literal
 import math
+import logging
 
 from .dataclasses import DeviceProfile, ModelProfile, QuantPerf
 
+logger = logging.getLogger(__name__)
 
 def valid_factors_of_L(L: int) -> List[int]:
     """
@@ -18,7 +20,8 @@ def valid_factors_of_L(L: int) -> List[int]:
             other = L // k
             if other != k and other != L:
                 fs.append(other)
-    print(L, fs)
+    logger.debug("L: %s", L)
+    logger.debug("fs: %s", fs)
     return sorted(set(fs))
 
 
@@ -67,7 +70,7 @@ def _sum_f_over_S(
             s_val = S_by_q[q][batch_key]
         else:
             # Old format compatibility - direct float values
-            # Get rid of this branch once all data is updated
+            # FIXME: Get rid of this branch once all data is updated
             s_val = S_by_q[q]
 
         # Handle f_by_q which might also have batch sizes in future
@@ -78,6 +81,7 @@ def _sum_f_over_S(
                 )
             f_val = f_by_q[batch_key]
 
+        # FIXME: ???
         if s_val > 0:
             total += f_val / s_val
     return total
@@ -209,7 +213,7 @@ def objective_vectors(
 
     for i, d in enumerate(devs):
         alpha, beta, xi = alpha_beta_xi(d, model, kv_factor)
-        #print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
+        # logger.debug(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
             a[i] = alpha

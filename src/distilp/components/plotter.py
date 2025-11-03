@@ -1,6 +1,8 @@
 import matplotlib.pyplot as plt
 from typing import List, Optional, Tuple
+import logging
 
+logger = logging.getLogger(__name__)
 
 def plot_k_curve(
     per_k_objs: List[Tuple[int, Optional[float]]],
@@ -15,13 +17,13 @@ def plot_k_curve(
     - save_path: if provided, saves a PNG instead of (or in addition to) showing it
     """
     if plt is None:
-        print("matplotlib not available; skipping plot.")
+        logger.warning("matplotlib not available; skipping plot.")
         return
 
     # Keep only feasible points and sort by k
     pairs = sorted([(k, v) for k, v in per_k_objs if v is not None], key=lambda t: t[0])
     if not pairs:
-        print("No feasible k values to plot.")
+        logger.warning("No feasible k values to plot.")
         return
 
     ks = [p[0] for p in pairs]
@@ -45,7 +47,7 @@ def plot_k_curve(
 
     if save_path:
         plt.savefig(save_path, dpi=150)
-        print(f"Saved plot to {save_path}")
+        logger.info(f"Saved plot to {save_path}")
 
     # Try to show (will no-op on headless backends)
     try:
