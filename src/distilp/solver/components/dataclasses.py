@@ -57,6 +57,24 @@ class DeviceProfile:
     d_bytes_can_swap: int = 0  # potential bytes we allow swapping
     d_swap_avail: int = 0  # actually available swap bytes
 
+    def print_summary(self) -> None:
+        """Print a summary of loaded devices."""
+        ram_gb = self.d_avail_ram / (1024**3)
+        print(f"   OS Type: {self.os_type}")
+        print(f"   RAM: {ram_gb:.1f} GB")
+        print(f"   Is Head: {self.is_head}")
+        print(f"   Unified Memory: {self.is_unified_mem}")
+
+        if self.has_cuda and self.d_avail_cuda:
+            cuda_gb = self.d_avail_cuda / (1024**3)
+            print(f"   CUDA: {cuda_gb:.1f} GB")
+
+        if self.has_metal and self.d_avail_metal:
+            metal_gb = self.d_avail_metal / (1024**3)
+            print(f"   Metal: {metal_gb:.1f} GB")
+
+        print(f"   Disk Speed: {self.s_disk / (1024**2):.1f} MB/s")
+
 
 @dataclass
 class ModelProfile:
@@ -108,3 +126,19 @@ class ModelProfile:
     flops_per_active_expert_per_token: Optional[Dict[str, int]] = (
         None  # Active expert FLOPs
     )
+
+    def print_summary(self) -> None:
+        """Print a summary of the loaded model."""
+        print(f"\n{'=' * 60}")
+        print("Model Profile:")
+        print(f"{'=' * 60}")
+        print(f"  Layers (L): {self.L}")
+        print(f"  Bytes per layer: {self.b_layer / (1024**2):.1f} MB")
+        print(f"  Input bytes: {self.b_in / (1024**2):.1f} MB")
+        print(f"  Output bytes: {self.b_out / (1024**2):.1f} MB")
+        print(f"  Attention heads (k/v): {self.hk}/{self.hv}")
+        print(f"  Head dimensions (k/v): {self.ek}/{self.ev}")
+        print(f"  KV cache tokens: {self.n_kv}")
+        print(f"  Embedding dimension: {self.e_embed}")
+        print(f"  Vocabulary size: {self.V}")
+        print(f"  Quantizations: {', '.join(self.Q)}")

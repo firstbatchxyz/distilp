@@ -7,95 +7,15 @@ This script loads profiles from JSON files and runs the gurobi solver.
 import argparse
 import json
 import sys
-from typing import List
-
 
 from distilp.solver.components.loader import (
     load_devices_and_model,
     load_from_profile_folder,
 )
-from distilp.solver.components.dataclasses import DeviceProfile, ModelProfile
 from distilp.solver.halda_p_solver import halda_solve
 
 
-def print_device_summary(devices: List[DeviceProfile]) -> None:
-    """Print a summary of loaded devices."""
-    print(f"\n{'='*60}")
-    print(f"Loaded {len(devices)} device(s):")
-    print(f"{'='*60}")
-
-    for i, dev in enumerate(devices, 1):
-        ram_gb = dev.d_avail_ram / (1024**3)
-        print(f"\n{i}. {dev.name}")
-        print(f"   OS Type: {dev.os_type}")
-        print(f"   RAM: {ram_gb:.1f} GB")
-        print(f"   Is Head: {dev.is_head}")
-        print(f"   Unified Memory: {dev.is_unified_mem}")
-
-        if dev.has_cuda and dev.d_avail_cuda:
-            cuda_gb = dev.d_avail_cuda / (1024**3)
-            print(f"   CUDA: {cuda_gb:.1f} GB")
-
-        if dev.has_metal and dev.d_avail_metal:
-            metal_gb = dev.d_avail_metal / (1024**3)
-            print(f"   Metal: {metal_gb:.1f} GB")
-
-        print(f"   Disk Speed: {dev.s_disk/(1024**2):.1f} MB/s")
-
-
-def print_model_summary(model: ModelProfile) -> None:
-    """Print a summary of the loaded model."""
-    print(f"\n{'='*60}")
-    print("Model Profile:")
-    print(f"{'='*60}")
-    print(f"  Layers (L): {model.L}")
-    print(f"  Bytes per layer: {model.b_layer/(1024**2):.1f} MB")
-    print(f"  Input bytes: {model.b_in/(1024**2):.1f} MB")
-    print(f"  Output bytes: {model.b_out/(1024**2):.1f} MB")
-    print(f"  Attention heads (k/v): {model.hk}/{model.hv}")
-    print(f"  Head dimensions (k/v): {model.ek}/{model.ev}")
-    print(f"  KV cache tokens: {model.n_kv}")
-    print(f"  Embedding dimension: {model.e_embed}")
-    print(f"  Vocabulary size: {model.V}")
-    print(f"  Quantizations: {', '.join(model.Q)}")
-
-
-def print_solution(result, devices: List[DeviceProfile]) -> None:
-    """Print the HALDA solution in a formatted way."""
-    print(f"\n{'='*60}")
-    print("HALDA Solution")
-    print(f"{'='*60}")
-
-    print(f"\nOptimal k: {result.k}")
-    print(f"Objective value: {result.obj_value:.6f}")
-    # print(f"Iterations: {result.iterations}")
-
-    print("\nLayer distribution (w):")
-    total_layers = sum(result.w)
-    for dev, wi in zip(devices, result.w):
-        percentage = (wi / total_layers) * 100
-        print(f"  {dev.name:40s}: {wi:3d} layers ({percentage:5.1f}%)")
-
-    print("\nGPU assignments (n):")
-    for dev, ni in zip(devices, result.n):
-        if ni > 0:
-            print(f"  {dev.name:40s}: {ni:3d} layers on GPU")
-        else:
-            print(f"  {dev.name:40s}: CPU only")
-
-    print("\nDevice sets:")
-    for set_name in ["M1", "M2", "M3"]:
-        if result.sets[set_name]:
-            device_names = [devices[i].name for i in result.sets[set_name]]
-            print(f"  {set_name}: {', '.join(device_names)}")
-
-    # if result.forced_M4:
-    #    print("\nDevices forced to M4 during calibration:")
-    #    for idx in result.forced_M4:
-    #        print(f"  - {devices[idx].name}")
-
-
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run HALDA solver for distributed LLM inference optimization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -192,23 +112,26 @@ Examples:
 
         # Print summaries if verbose
         if args.verbose:
-            print_device_summary(devices)
-            print_model_summary(model)
+            print(f"\n{'=' * 60}")
+            print(f"Loaded {len(devices)} device(s):")
+            print(f"{'=' * 60}")
+
+            for i, dev in enumerate(devices, 1):
+                print(f"\n{i}. {dev.name}")
+                dev.print_summary()
+
+            model.print_summary()
         elif not args.quiet:
             print(f"\nLoaded {len(devices)} device(s) and model with {model.L} layers")
 
         # Run HALDA solver
         if not args.quiet:
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print("Running HALDA solver...")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
 
         result = halda_solve(
-            devices,
-            model,
-            mip_gap=args.mip_gap,
-            plot=not args.no_plot,
-            kv_bits="4bit"
+            devices, model, mip_gap=args.mip_gap, plot=not args.no_plot, kv_bits="4bit"
         )
 
         # Print solution
@@ -218,7 +141,7 @@ Examples:
             for dev, wi in zip(devices, result.w):
                 print(f"{dev.name}: {wi}")
         else:
-            print_solution(result, devices)
+            result.print_solution(devices)
 
         # Save solution if requested
         if args.save_solution:

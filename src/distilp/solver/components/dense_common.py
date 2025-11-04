@@ -22,12 +22,14 @@ def valid_factors_of_L(L: int) -> List[int]:
     return sorted(set(fs))
 
 
-def b_prime(model: ModelProfile,
-            kv_bits_k: float = 1.0,
-            kv_bits_v: float | None = None,
-            *,
-            rho_w: float = 0.15,
-            kv_group: int = 64) -> int:
+def b_prime(
+    model: ModelProfile,
+    kv_bits_k: float = 1.0,
+    kv_bits_v: float | None = None,
+    *,
+    rho_w: float = 0.15,
+    kv_group: int = 64,
+) -> int:
     """
     b'_mlx = (1 + rho_w) * b_layer
              + (1 + 2/kv_group) * [ (h_k*e_k*kv_bits_k) + (h_v*e_v*kv_bits_v) ] * n_kv
@@ -78,6 +80,7 @@ def _sum_f_over_S(
                 )
             f_val = f_by_q[batch_key]
 
+        # FIXME: error here
         if s_val > 0:
             total += f_val / s_val
     return total
@@ -129,9 +132,7 @@ def alpha_beta_xi(
     else:
         beta = 0.0
 
-    xi = (dev.t_ram2vram + dev.t_vram2ram) * (
-        0 if dev.is_unified_mem else 1
-    )
+    xi = (dev.t_ram2vram + dev.t_vram2ram) * (0 if dev.is_unified_mem else 1)
     return alpha, beta, xi
 
 
@@ -209,7 +210,7 @@ def objective_vectors(
 
     for i, d in enumerate(devs):
         alpha, beta, xi = alpha_beta_xi(d, model, kv_factor)
-        #print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
+        # print(f"alpha: {alpha}, beta: {beta}, xi: {xi}")
         c[i] = xi
         if i in sets["M1"]:
             a[i] = alpha
@@ -267,3 +268,37 @@ class HALDAResult:
     k: int
     obj_value: float
     sets: Dict[str, List[int]]
+
+    def print_solution(self, devices: List[DeviceProfile]) -> None:
+        """Print the HALDA solution in a formatted way w.r.t devices."""
+        print(f"\n{'=' * 60}")
+        print("HALDA Solution")
+        print(f"{'=' * 60}")
+
+        print(f"\nOptimal k: {self.k}")
+        print(f"Objective value: {self.obj_value:.6f}")
+        # print(f"Iterations: {result.iterations}")
+
+        print("\nLayer distribution (w):")
+        total_layers = sum(self.w)
+        for dev, wi in zip(devices, self.w):
+            percentage = (wi / total_layers) * 100
+            print(f"  {dev.name:40s}: {wi:3d} layers ({percentage:5.1f}%)")
+
+        print("\nGPU assignments (n):")
+        for dev, ni in zip(devices, self.n):
+            if ni > 0:
+                print(f"  {dev.name:40s}: {ni:3d} layers on GPU")
+            else:
+                print(f"  {dev.name:40s}: CPU only")
+
+        print("\nDevice sets:")
+        for set_name in ["M1", "M2", "M3"]:
+            if self.sets[set_name]:
+                device_names = [devices[i].name for i in self.sets[set_name]]
+                print(f"  {set_name}: {', '.join(device_names)}")
+
+        # if result.forced_M4:
+        #    print("\nDevices forced to M4 during calibration:")
+        #    for idx in result.forced_M4:
+        #        print(f"  - {devices[idx].name}")
