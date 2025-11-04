@@ -1,15 +1,22 @@
 # distilp
 
-Run to install UV
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+## Installation
+
+```sh
+# Install solver only
+uv add distilp[solver]
+
+# Install profiler only
+uv add distilp[profiler]
+
+# Install both
+uv add distilp[solver,profiler]
+
+# Install profiler with CUDA 12 support
+uv add distilp[profiler,cuda12]
+
+# Install everything for development
+uv add distilp[solver,profiler,torch]
 ```
 
-Then
-```bash
-git clone https://github.com/firstbatchxyz/dsolver.git
-cd dsolver
-uv sync
-```
-
-
+TODO: !!!

@@ -7,11 +7,24 @@ authors = [
   { name = "Mehmet Uzunosmanoğlu", email = "mehmetu@firstbatch.xyz" },
 ]
 requires-python = ">=3.12"
-dependencies = [
-  "matplotlib>=3.10.6",
-  "numpy>=2.3.2",
-  "scipy>=1.16.1",
+dependencies = ["numpy>=2.3.2"] # or >=1.24.0
+
+[project.optional-dependencies]
+solver = ["scipy>=1.16.1"]
+profiler = [
+  "huggingface-hub[cli]==0.24.0",
+  "psutil>=7.0.0",
+  "py-cpuinfo>=9.0.0",
+  "mlx==0.29.2",
+  "mlx-lm==0.28.2",
 ]
+solver-plotting = ["matplotlib>=3.10.6"]
+
+# torch = ["torch>=2.0.0", "transformers>=4.30.0"]
+# cuda12 = ["cupy-cuda12x>=13.6.0", "torch>=2.0.0"]
+# cuda11 = ["cupy-cuda11x>=13.6.0", "torch>=2.0.0"]
+# rocm50 = ["cupy-rocm-5-0>=13.3.0", "torch>=2.0.0"]
+# windows = ["torch>=2.0.0", "transformers>=4.30.0"]
 
 [build-system]
 requires = ["uv_build>=0.8.17,<0.9.0"]

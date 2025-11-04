@@ -1,26 +1,17 @@
 """
-DistilP: A Python package for solving layer assignment problems in distributed inference
+DistilP: A Python library for MILP-based layer/expert assignment
+for distributed inference across heterogeneous devices.
+
+Submodules are available based on installed optional dependencies:
+- distilp.solver: Install with `pip install distilp[solver]`
+- distilp.profiler: Install with `pip install distilp[profiler]`
+
+Usage:
+    # For solver functionality
+    from distilp.solver import halda_solve, DeviceProfile, ModelProfile
+
+    # For profiler functionality
+    from distilp.profiler import profile_model, profile_device, DeviceInfo
 """
-
-from .halda_p_solver import halda_solve
-from .components.dataclasses import DeviceProfile, ModelProfile
-from .components.loader import (
-    load_device,
-    load_model,
-    load_model_profile_from_dict,
-    load_model_profile_split_from_json_string,
-    load_device_profile_from_dict,
-)
-
-__all__ = [
-    "halda_solve",
-    "DeviceProfile",
-    "ModelProfile",
-    "load_device",
-    "load_model",
-    "load_model_profile_from_dict",
-    "load_model_profile_split_from_json_string",
-    "load_device_profile_from_dict",
-]
 
 __version__ = "0.1.2"
