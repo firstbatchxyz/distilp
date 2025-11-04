@@ -1,14 +1,12 @@
 import sys
 import json
 import pprint
-import inspect
 import importlib
 from dataclasses import asdict
 from argparse import ArgumentParser
-from huggingface_hub import hf_hub_download
 
 from distilp.profiler import profile_model_split, profile_device
-from distilp.profiler.api import _resolve_module_from_config
+from distilp.profiler.api import load_config_from_repo
 
 
 def main() -> int:
@@ -73,50 +71,16 @@ def main() -> int:
     # Phase flag removed: we always emit split prefill/decode outputs
     args = parser.parse_args()
 
-    # Load config from Hugging Face Hub
-    if args.repo_id:
-        try:
-            config_path = hf_hub_download(repo_id=args.repo_id, filename="config.json")
-            with open(config_path, "r") as f:
-                config_dict = json.load(f)
-        except Exception as e:
-            raise RuntimeError(f"Unable to download config from Hugging Face Hub: {e}")
-    else:
+    # Validate repository ID is provided
+    if not args.repo_id:
         raise ValueError(
             "Repository ID (--repo) is required to load model config from Hugging Face Hub."
         )
 
-    # Resolve module name from CLI override or config.model_type
-    module_name = args.model or _resolve_module_from_config(config_dict)
-
-    # Import mlx_lm module and gather types
-    try:
-        module = importlib.import_module(f"mlx_lm.models.{module_name}")
-    except ImportError as e:
-        raise RuntimeError(
-            f"Model '{module_name}' not found in mlx_lm registry. Error: {e}"
-        )
-    Model = getattr(module, "Model")
-    ModelArgs = getattr(module, "ModelArgs")
-
-    assert inspect.isclass(Model)
-    assert inspect.isclass(ModelArgs)
-    # FIXME: checking both is redundant?
-    if Model is None or ModelArgs is None:
-        raise RuntimeError(
-            f"Could not import symbols 'Model' and 'ModelArgs' from mlx_lm.models.{module_name}"
-        )
-
-    try:
-        modelargs_params = inspect.signature(ModelArgs.__init__).parameters
-        # Skip 'self' parameter
-        valid_params = [p for p in modelargs_params if p != "self"]
-        filtered_config = {k: v for k, v in config_dict.items() if k in valid_params}
-
-        config_obj = ModelArgs(**filtered_config)
-        obj = Model(config_obj)
-    except Exception as e:
-        raise RuntimeError(f"Unable to instantiate model object from config: {e}")
+    # Load config from Hugging Face Hub using the API function
+    config_obj, config_dict, module_name = load_config_from_repo(
+        repo_id=args.repo_id, model_name=args.model
+    )
 
     if args.ret == "device":
         if args.output_path is None:
@@ -147,6 +111,11 @@ def main() -> int:
 
         # Determine base batch size from --batches
         base_B = bs_list[0]
+
+        # Instantiate model for profiling
+        module = importlib.import_module(f"mlx_lm.models.{module_name}")
+        Model = getattr(module, "Model")
+        obj = Model(config_obj)
 
         with open(args.output_path, "w") as f:
             # Emit compact model profile with phase-split FLOPs only

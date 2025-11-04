@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Main script to run HALDA solver with device and model profiles.
-This script loads profiles from JSON files and runs the gurobi solver.
+This script loads profiles from JSON files and runs the solver.
 """
 
 import argparse

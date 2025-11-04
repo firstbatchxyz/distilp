@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Literal
 import math
 
-from .dataclasses import DeviceProfile, ModelProfile, QuantPerf
+from ...common import DeviceProfile, ModelProfile, QuantPerf
 
 
 def valid_factors_of_L(L: int) -> List[int]:
@@ -81,8 +81,8 @@ def _sum_f_over_S(
             f_val = f_by_q[batch_key]
 
         # FIXME: error here
-        if s_val > 0:
-            total += f_val / s_val
+        if s_val > 0:  # type: ignore FIXME: !!!
+            total += f_val / s_val  # type: ignore FIXME: !!!
     return total
 
 
@@ -116,14 +116,14 @@ def alpha_beta_xi(
     """
     bprime = b_prime(model, kv_bits_k=kv_factor)
     # α_m (CPU path)
-    comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)
+    comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)  # type: ignore FIXME: !!!
     alpha = comp_cpu + dev.t_kvcpy_cpu + (bprime / dev.T_cpu)
 
     # β_m (GPU minus CPU path), 0 if no GPU available
     S_gpu = _gpu_table(dev)
     T_gpu = _pick_T_gpu(dev)
     if S_gpu is not None and T_gpu is not None:
-        comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu
+        comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu  # type: ignore FIXME: !!!
         beta = (
             comp_gpu_minus_cpu
             + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
@@ -237,7 +237,7 @@ def kappa_constant(
     head_idx = next((i for i, d in enumerate(devs) if d.is_head), 0)
     head = devs[head_idx]
 
-    head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)
+    head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)  # type: ignore FIXME: !!!
     head_load_regs = (model.b_in / model.V + model.b_out) / head.T_cpu
     head_disk_in = model.b_in / (model.V * head.s_disk)
     head_disk_out = (

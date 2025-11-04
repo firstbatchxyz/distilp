@@ -1,6 +1,5 @@
 import os
 import uuid
-import json
 import psutil
 import pathlib
 import platform
@@ -13,19 +12,17 @@ import fcntl
 
 from .parsers.mlx import in_profile_model
 from .datatypes import DeviceInfo
-from dataclasses import asdict, dataclass, field
+from ..common import DeviceProfileInfo
 
 import mlx.core as mx
 import mlx.nn as nn
-from typing import List, Dict, Optional
-
-QuantPerf = Dict[str, float]
+from typing import List, Dict
 
 # from src.utils.logger import logger
 
 try:
-    import cupy as cp # type: ignore | optional dep
-    import ctypes as C # FIXME: do we need this? ctypes is built-in
+    import cupy as cp  # type: ignore | optional dep
+    import ctypes as C  # FIXME: do we need this? ctypes is built-in
 
     _has_cupy = True
 except ImportError:
@@ -300,7 +297,9 @@ def _bytes_per_weight_from_config(config) -> float:
             except Exception:
                 bits = 0
             quant_method = (
-                q.get("quant_method") if isinstance(q.get("quant_method"), (str,)) else None
+                q.get("quant_method")
+                if isinstance(q.get("quant_method"), (str,))
+                else None
             )
             if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
                 bits = 4
@@ -545,6 +544,8 @@ def metal_bench_mem_to_compute(di, debug):
 
     # Estimate the copy from RAM to compute units
     def mem_load():
+        nonlocal A
+
         i = random.choice(idxs)
         out = mx.sum(A[i * M : (i + 1) * M])
         mx.eval(out)
@@ -582,192 +583,6 @@ def profile(config, max_batch_exp, debug) -> DeviceInfo:
     bench_cpu_to_gpu_transfers(di, config.hidden_size, debug)
     bench_disk_mainfs(di, debug=debug, config=config)
     return di
-
-
-@dataclass
-class ModelProfileInfo:
-    """
-    Model-global constants (bytes, sizes, FLOPs) from profiler.
-    """
-
-    # Per-layer metrics
-    b: List[int] = []  # bytes per layer (weights)
-    b_i: List[int] = []  # input bytes per layer (base batch)
-    b_o: List[int] = []  # output bytes per layer (base batch)
-    # FLOPs per layer for each batch size (e.g., {'b_1': [...], 'b_2': [...]})
-    f_q: Dict[str, List[float]] = field(default_factory=dict)
-
-    # Model-level metrics (new fields)
-    L: int = 0  # total layers
-    hk: int = 0  # heads for keys
-    ek: int = 0  # emb per head (k)
-    hv: int = 0  # heads for values
-    ev: int = 0  # emb per head (v)
-    n_kv: int = 0  # tokens in KV cache
-    e_embed: int = 0  # embedding size
-    V: int = 0  # vocabulary size
-
-    # Quantization level label for this model/profile
-    quantization: str = ""  # One of: Q4_K, Q5_K, Q6_K, Q8_0, BF16, F16, F32
-    # Output-layer FLOPs per batch size (e.g., {'b_1': 123.0})
-    f_out: Dict[str, float] = field(default_factory=dict)
-    # Sequence length used for profiling
-    seq_len: int = 0
-
-
-@dataclass
-class MoEModelProfileInfo(ModelProfileInfo):
-    """
-    MoE-specific model profile with component-level metrics for solver assignment.
-    Inherits base metrics from ModelProfileInfo.
-    """
-
-    # MoE configuration
-    n_routed_experts: int = 0  # Number of routed experts per MoE layer
-    n_shared_experts: int = 0  # Number of always-active shared experts per MoE layer
-    experts_per_token: int = 0  # Top-k experts selected per token
-    moe_intermediate_size: int = 0  # FFN hidden dimension in each expert
-    moe_layer_freq: int = 0  # Every N layers is MoE (1 = all MoE after first_k_dense)
-    first_k_dense_replace: int = 0  # First K layers remain dense (no MoE)
-    total_moe_layers: int = 0  # Total number of MoE layers in the model
-
-    # Per-layer component metrics for solver assignment
-    moe_layer_indices: List[int] = field(default_factory=list)  # Which layers are MoE
-
-    # Attention component (same for MoE and dense, but tracked separately for assignment)
-    attn_bytes: List[int] = field(
-        default_factory=list
-    )  # Attention weight bytes per layer
-    attn_flops: Dict[str, List[float]] = field(
-        default_factory=dict
-    )  # Attention FLOPs per layer by batch size
-
-    # MoE FFN component (per layer, indexed by layer number)
-    bytes_per_expert: Dict[int, int] = field(
-        default_factory=dict
-    )  # Bytes per routed expert by layer
-    bytes_shared_experts: Dict[int, int] = field(
-        default_factory=dict
-    )  # Total bytes for shared experts by layer
-    flops_per_expert: Dict[int, float] = field(
-        default_factory=dict
-    )  # FLOPs per routed expert by layer
-    flops_shared_experts: Dict[int, float] = field(
-        default_factory=dict
-    )  # Total shared experts FLOPs by layer
-    router_flops: Dict[int, float] = field(
-        default_factory=dict
-    )  # Router/gate FLOPs by layer
-    router_bytes: Dict[int, int] = field(
-        default_factory=dict
-    )  # Router/gate weight bytes by layer
-    flops_per_active_expert_per_token: Dict[int, float] = field(
-        default_factory=dict
-    )  # Per-active-expert per-token FLOPs by layer
-
-
-@dataclass
-class ModelProfilePhased:
-    prefill: ModelProfileInfo
-    decode: ModelProfileInfo
-
-
-@dataclass
-class ModelProfileSplit:
-    b: List[int]
-    b_i: List[int]
-    b_o: List[int]
-    L: int
-    hk: int
-    hv: int
-    ek: int
-    ev: int
-    n_kv: int
-    e_embed: int
-    V: int
-    seq_len: int
-
-    f_q: Dict[str, Dict[str, List[float]]]  # phase -> b_tag -> [FLOPs per layer]
-    f_out: Dict[str, Dict[str, float]]  # phase -> b_tag -> output layer FLOPs
-    quantization: str  # quantization label
-
-    # MoE fields (optional, populated only for MoE models)
-    is_moe: bool = False
-    n_routed_experts: int = 0
-    n_shared_experts: int = 0
-    experts_per_token: int = 0
-    moe_intermediate_size: int = 0
-    moe_layer_freq: int = 0
-    first_k_dense_replace: int = 0
-    total_moe_layers: int = 0
-    moe_layer_indices: List[int] = field(default_factory=list)
-
-    # Component metrics for solver assignment
-    attn_bytes: List[int] = field(default_factory=list)
-    attn_flops: Dict[str, Dict[str, List[float]]] = field(
-        default_factory=dict
-    )  # phase -> b_tag -> [FLOPs]
-    bytes_per_expert: Dict[int, int] = field(default_factory=dict)
-    bytes_shared_experts: Dict[int, int] = field(default_factory=dict)
-    flops_per_expert: Dict[int, float] = field(default_factory=dict)
-    flops_shared_experts: Dict[int, float] = field(default_factory=dict)
-    router_flops: Dict[int, float] = field(default_factory=dict)
-    router_bytes: Dict[int, int] = field(default_factory=dict)
-    flops_per_active_expert_per_token: Dict[int, float] = field(default_factory=dict)
-
-
-@dataclass
-class DeviceProfileInfo:
-    """
-    One device dm with measured/profiler data.
-    Notation in comments matches the paper's symbols.
-    """
-
-    # --- required (no defaults) ---
-    name: str = ""
-    os_type: str = ""  # 'mac_no_metal' | 'mac_metal' | 'linux' | 'android'
-    is_head: bool = True  # I_{m=1}  (True for the head device that holds input/output layers on CPU)
-    is_unified_mem: bool = False  # I_UMA (Apple Silicon etc.)
-    has_cuda: bool = False  # I_cuda
-    has_metal: bool = False  # I_metal
-
-    # Throughput tables (FLOPS) per quantization for CPU/GPU paths
-    scpu: QuantPerf = None  # s^{cpu}_{m,q}
-    T_cpu: float = 0.0  # T^{cpu}_m (register loading throughput, bytes/s)
-
-    # KV-copy times (sec) for a fixed 2*(h_k e_k + h_v e_v)·n_kv byte payload
-    t_kvcpy_cpu: float = 0.0  # t^{kv_cpy,cpu}_m
-    t_kvcpy_gpu: float = 0.0  # t^{kv_cpy,gpu}_m
-
-    # Host<->GPU staging + inter-device comm (sec)
-    t_ram2vram: float = 0.0  # t^{ram->vram}_m
-    t_vram2ram: float = 0.0  # t^{vram->ram}_m
-    t_comm: float = 0.0  # t^{comm}_m
-
-    # Disk read throughput (bytes/s)
-    s_disk: float = 0.0  # s^{disk}_m
-
-    # Available memories / working sets (bytes)
-    d_avail_ram: int = 0  # d^{avail}_m (RAM)
-
-    # --- optional (come after required) ---
-    sgpu_cuda: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for CUDA
-    sgpu_metal: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for Metal
-    T_cuda: Optional[float] = None  # T^{gpu}_m for CUDA (bytes/s)
-    T_metal: Optional[float] = None  # T^{gpu}_m for Metal (bytes/s)
-    d_avail_cuda: Optional[int] = None  # d^{avail}_{m,cuda} (VRAM)
-    d_avail_metal: Optional[int] = None  # d^{avail}_{m,metal} (Metal working set)
-
-    # --- small buffers and swap caps (bytes) ---
-    c_cpu: int = 0  # c^{cpu} (CPU compute buffer)
-    c_gpu: int = 0  # c^{gpu} (GPU compute buffer)
-
-    # Android swap capacity (only used if os_type == "android")
-    d_bytes_can_swap: int = 0  # potential bytes we allow swapping
-    d_swap_avail: int = 0  # actually available swap bytes
-
-    def json(self):
-        return json.dumps(asdict(self))
 
 
 # Get device information in solver variable names
@@ -810,7 +625,7 @@ def profile_device(config, debug, max_batch_exp=6) -> DeviceProfileInfo:
     scpu_batches = [f"b_{2**n}" for n in range(max_batch_exp)]
     ret.scpu = {}
     for type in scpu_dtypes:
-        ret.scpu.update({type: {}})
+        ret.scpu.update({"type": {}})
         di_type = getattr(device_info.cpu.benchmarks, type)
         for b in scpu_batches:
             _val = ret.scpu.get(type)
@@ -908,7 +723,7 @@ def profile_model(
     B: int = 1,
     L: int = 4096,
     config_dict: Dict = {},
-    debug = 0,
+    debug=0,
     bs_list: List[int] = [],
     phase: str = "merged",
 ):
@@ -1533,7 +1348,7 @@ def profile_model_split(
     B: int,
     L: int,
     config_dict: Dict,
-    debug = 0,
+    debug=0,
     bs_list: List[int] = [],
 ):
     phased = profile_model_phased(

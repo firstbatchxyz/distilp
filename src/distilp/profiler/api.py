@@ -6,9 +6,9 @@ import importlib
 from typing import Dict, List, Optional, Tuple, Any
 from huggingface_hub import hf_hub_download
 
-from .profiler import ModelProfileSplit, profile_model_split
-from .profiler import DeviceProfileInfo, profile_device as _profile_device
-
+from .profiler import profile_model_split
+from .profiler import profile_device as _profile_device
+from ..common import ModelProfileSplit, DeviceProfileInfo
 
 # Minimal aliasing from HF model_type to mlx_lm.models module names
 _MODEL_TYPE_ALIASES: Dict[str, str] = {
@@ -161,7 +161,7 @@ def profile_model(
     # Create the model (only structure, no weights)
     module = importlib.import_module(f"mlx_lm.models.{module_name_final}")
     Model = getattr(module, "Model", None)
-    model = Model(config_obj) # type: ignore FIXME: !!!
+    model = Model(config_obj)  # type: ignore FIXME: !!!
 
     # Profile the model
     result = profile_model_split(
@@ -211,7 +211,9 @@ def profile_device(
         if isinstance(config_dict.get("quantization"), dict):
             setattr(config_obj, "quantization", config_dict["quantization"])
         if isinstance(config_dict.get("quantization_config"), dict):
-            setattr(config_obj, "quantization_config", config_dict["quantization_config"])
+            setattr(
+                config_obj, "quantization_config", config_dict["quantization_config"]
+            )
         # Also expose dtype hints if not present on config object
         if not hasattr(config_obj, "torch_dtype") and config_dict.get("torch_dtype"):
             setattr(config_obj, "torch_dtype", config_dict.get("torch_dtype"))
@@ -221,7 +223,9 @@ def profile_device(
         pass
 
     # Profile the device
-    device_info = _profile_device(config=config_obj, debug=debug, max_batch_exp=max_batch_exp)
+    device_info = _profile_device(
+        config=config_obj, debug=debug, max_batch_exp=max_batch_exp
+    )
 
     return device_info
 

@@ -1,9 +1,4 @@
 #!/usr/bin/env python3
-"""
-Loader for new profiler format that works directly with gurobi_solver.
-This loader reads device and model profiles in the new format and converts them
-to gurobi_solver's DeviceProfile and ModelProfile classes.
-"""
 
 import json
 import sys
@@ -12,7 +7,7 @@ import os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from typing import Dict, List, Any, Tuple, Union
-from .dataclasses import DeviceProfile, ModelProfile
+from ...common import DeviceProfile, ModelProfile
 
 
 def load_device_profile(device_path: str) -> DeviceProfile:
@@ -79,7 +74,7 @@ def load_device_profile(device_path: str) -> DeviceProfile:
             fp16_val = fp16_data[batch_key]
             bf16_val = bf16_data[batch_key]
 
-            # Map to quantization types used by gurobi solver
+            # Map to quantization types used by solver
             scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
             scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
             scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
@@ -544,7 +539,7 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
             fp16_val = fp16_data[batch_key]
             bf16_val = bf16_data[batch_key]
 
-            # Map to quantization types used by gurobi solver
+            # Map to quantization types used by solver
             scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
             scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
             scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
