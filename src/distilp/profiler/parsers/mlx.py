@@ -2,7 +2,7 @@ import mlx.nn as nn
 
 from math import ceil
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, TypeVar
 
 from .meta import LayerMeta
 
@@ -35,8 +35,8 @@ def in_profile_model(
     group_size=32,
     debug=0,
     phase: str = "merged",  # 'prefill' | 'decode' | 'merged'
-    cfg_dict: dict = None,
-    exclude_patterns=None,
+    cfg: dict = {},
+    exclude_patterns: list = [],
     fp_bits: int = 16,
 ):
     if not hasattr(m, "layers"):
@@ -49,16 +49,11 @@ def in_profile_model(
     scale_bytes = 2
     zero_bytes = 0
 
-    if exclude_patterns is None:
-        exclude_patterns = []
-
-    # Config getter that checks dict first then object
-    cfg = cfg_dict or {}
-
-    def cfg_get(key, default=None):
+    T = TypeVar("T")
+    def cfg_get(key: str, default: T | None = None) -> T:
         if key in cfg and cfg[key] is not None:
             return cfg[key]
-        return getattr(config, key, default)
+        return getattr(config, key, default) # type: ignore
 
     def is_excluded(path: str) -> bool:
         for pat in exclude_patterns:
@@ -88,7 +83,7 @@ def in_profile_model(
             f"    num_hidden_layers={config.num_hidden_layers}"
         )
 
-    for l in m.layers:
+    for l in m.layers: # type: ignore # FIXME: !!!
         lm = LayerMeta()
         lm.layer = l
         lm.name = f"decoder_{decoder_idx}"

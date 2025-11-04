@@ -5,7 +5,9 @@ import inspect
 import importlib
 from typing import Dict, List, Optional, Tuple, Any
 from huggingface_hub import hf_hub_download
-from .profiler import profile_model_split, profile_device as _profile_device
+
+from .profiler import ModelProfileSplit, profile_model_split
+from .profiler import DeviceProfileInfo, profile_device as _profile_device
 
 
 # Minimal aliasing from HF model_type to mlx_lm.models module names
@@ -124,7 +126,7 @@ def profile_model(
     sequence_length: int = 512,
     model_name: Optional[str] = None,
     debug: int = 0,
-) -> Any:
+) -> ModelProfileSplit:
     """
     Profile a model from a HuggingFace repository.
 
@@ -159,7 +161,7 @@ def profile_model(
     # Create the model (only structure, no weights)
     module = importlib.import_module(f"mlx_lm.models.{module_name_final}")
     Model = getattr(module, "Model", None)
-    model = Model(config_obj)
+    model = Model(config_obj) # type: ignore FIXME: !!!
 
     # Profile the model
     result = profile_model_split(
@@ -180,7 +182,7 @@ def profile_device(
     model_name: Optional[str] = None,
     max_batch_exp: int = 6,
     debug: int = 0,
-) -> Any:
+) -> DeviceProfileInfo:
     """
     Profile device capabilities using a model configuration from HuggingFace.
 

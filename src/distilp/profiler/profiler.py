@@ -24,8 +24,8 @@ QuantPerf = Dict[str, float]
 # from src.utils.logger import logger
 
 try:
-    import cupy as cp
-    import ctypes as C
+    import cupy as cp # type: ignore | optional dep
+    import ctypes as C # FIXME: do we need this? ctypes is built-in
 
     _has_cupy = True
 except ImportError:
@@ -440,10 +440,11 @@ def bench_disk_mainfs(di, iter=10, reads=200, debug=0, config=None):
     di.disk.random = di.disk.read
 
 
-def get_sysmem_info(device_info, debug):
+def get_sysmem_info(device_info: DeviceInfo, debug):
     import numpy as np
 
     sm = psutil.swap_memory()
+    # mx_cpu = mx.Device(type=mx.cpu) # FIXME: use this for the op below?
     mx.set_default_device(mx.cpu)
     vm = psutil.virtual_memory()
     device_info.memory.total = vm.total  # bytes
@@ -465,10 +466,10 @@ def get_sysmem_info(device_info, debug):
     parts = mx.split(A, t)
     streams = [mx.new_stream(mx.cpu) for _ in range(t)]
 
-    def parallel_read_hot():
-        return [mx.eval(mx.abs(p, stream=s)) for p, s in zip(parts, streams)]
-
+    # def parallel_read_hot():
+    #     return [mx.eval(mx.abs(p, stream=s)) for p, s in zip(parts, streams)]
     # device_info.memory.cpu_read_warm_bw = bytes_A/bench(lambda: parallel_read_hot())  # bytes/s
+
     device_info.memory.cpu_read_warm_bw = bytes_A / bench(
         lambda: mx.abs(A), mx.cpu, "cpu_read_warm_bw", 5, 10, debug
     )  # bytes/s
@@ -590,9 +591,9 @@ class ModelProfileInfo:
     """
 
     # Per-layer metrics
-    b: List[int] = None  # bytes per layer (weights)
-    b_i: List[int] = None  # input bytes per layer (base batch)
-    b_o: List[int] = None  # output bytes per layer (base batch)
+    b: List[int] = []  # bytes per layer (weights)
+    b_i: List[int] = []  # input bytes per layer (base batch)
+    b_o: List[int] = []  # output bytes per layer (base batch)
     # FLOPs per layer for each batch size (e.g., {'b_1': [...], 'b_2': [...]})
     f_q: Dict[str, List[float]] = field(default_factory=dict)
 
@@ -750,12 +751,12 @@ class DeviceProfileInfo:
     d_avail_ram: int = 0  # d^{avail}_m (RAM)
 
     # --- optional (come after required) ---
-    sgpu_cuda: QuantPerf = None  # s^{gpu}_{m,q} for CUDA
-    sgpu_metal: QuantPerf = None  # s^{gpu}_{m,q} for Metal
-    T_cuda: float = None  # T^{gpu}_m for CUDA (bytes/s)
-    T_metal: float = None  # T^{gpu}_m for Metal (bytes/s)
-    d_avail_cuda: int = None  # d^{avail}_{m,cuda} (VRAM)
-    d_avail_metal: int = None  # d^{avail}_{m,metal} (Metal working set)
+    sgpu_cuda: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for CUDA
+    sgpu_metal: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for Metal
+    T_cuda: Optional[float] = None  # T^{gpu}_m for CUDA (bytes/s)
+    T_metal: Optional[float] = None  # T^{gpu}_m for Metal (bytes/s)
+    d_avail_cuda: Optional[int] = None  # d^{avail}_{m,cuda} (VRAM)
+    d_avail_metal: Optional[int] = None  # d^{avail}_{m,metal} (Metal working set)
 
     # --- small buffers and swap caps (bytes) ---
     c_cpu: int = 0  # c^{cpu} (CPU compute buffer)
@@ -906,16 +907,15 @@ def profile_model(
     config,
     B: int = 1,
     L: int = 4096,
-    config_dict: Dict = None,
-    debug=0,
-    bs_list: Optional[List[int]] = None,
+    config_dict: Dict = {},
+    debug = 0,
+    bs_list: List[int] = [],
     phase: str = "merged",
 ):
     dtype = None
     bits = 0
     group_size = 0
-    if config_dict is None:
-        config_dict = {}
+
     # Prefer explicit quantization section for bit-width
     quant_method = None
     if isinstance(config_dict.get("quantization"), dict):
@@ -1074,8 +1074,6 @@ def profile_model(
     ret.quantization = q_label
 
     # Multi-batch-size profiles: only if provided via --batches
-    if bs_list is None:
-        bs_list = []
 
     for Bx in bs_list:
         tag = f"b_{Bx}"
@@ -1104,9 +1102,9 @@ def profile_moe_model(
     config,
     B: int = 1,
     L: int = 4096,
-    config_dict: Dict = None,
+    config_dict: Dict = {},
     debug=0,
-    bs_list: Optional[List[int]] = None,
+    bs_list: List[int] = [],
     phase: str = "merged",
 ):
     """
@@ -1116,8 +1114,6 @@ def profile_moe_model(
     dtype = None
     bits = 0
     group_size = 0
-    if config_dict is None:
-        config_dict = {}
 
     # Check if this is an MoE model - handle various naming conventions
     cfg = config_dict if config_dict else {}
@@ -1473,9 +1469,6 @@ def profile_moe_model(
     ret.quantization = q_label
 
     # Multi-batch profiles
-    if bs_list is None:
-        bs_list = []
-
     for Bx in bs_list:
         tag = f"b_{Bx}"
         layers_bx = in_profile_model(
@@ -1508,7 +1501,7 @@ def profile_model_phased(
     L: int,
     config_dict: Dict,
     debug=0,
-    bs_list: Optional[List[int]] = None,
+    bs_list: List[int] = [],
 ):
     # Use profile_moe_model which auto-detects MoE models
     prefill = profile_moe_model(
@@ -1540,8 +1533,8 @@ def profile_model_split(
     B: int,
     L: int,
     config_dict: Dict,
-    debug=0,
-    bs_list: Optional[List[int]] = None,
+    debug = 0,
+    bs_list: List[int] = [],
 ):
     phased = profile_model_phased(
         model,

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-
+from typing import Literal
 
 @dataclass
 class CPUTopology:
@@ -79,8 +79,10 @@ class SystemMemory:
     available_swap: float = 0.0
     cpu_read_cold_bw: float = 0.0
     cpu_read_warm_bw: float = 0.0
-    cpu_rw_cold_bw: float = 0.0
-    cpu_rw_warm_bw: float = 0.0
+    # cpu_rw_cold_bw: float = 0.0 # TODO: these were unused
+    # cpu_rw_warm_bw: float = 0.0 # TODO: these were unused
+    cpu_write_cold_bw: float = 0.0
+    cpu_write_warm_bw: float = 0.0
     memcpy_delay: float = 0.0
 
 
@@ -120,14 +122,15 @@ class GPUMemory:
 
 @dataclass
 class GPUInfo:
-    name: str = None
+    name: Literal["cuda", "metal", ""] = "" # "cuda" | "metal" | "" (none)
     memory: GPUMemory = field(default_factory=GPUMemory)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
 
 
 @dataclass
 class DeviceInfo:
-    os: str = None
+    os: str = "" # 'linux' | 'windows' | ... | "" (none)
+    # empty string is also how `platform.system()` indicates unknown OS
     cpu: CPUInfo = field(default_factory=CPUInfo)
     gpu: GPUInfo = field(default_factory=GPUInfo)
     disk: DiskInfo = field(default_factory=DiskInfo)

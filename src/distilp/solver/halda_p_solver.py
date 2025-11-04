@@ -255,16 +255,15 @@ def solve_fixed_k_milp(
 
     # VRAM/shared caps with single overflow t_i used in both inequalities (no double charge)
     for i, d in enumerate(devs):
-        has_cuda = bool(d.has_cuda and d.d_avail_cuda is not None)
-        has_metal = bool(d.has_metal and d.d_avail_metal is not None)
-        if has_cuda:
+        if d.has_cuda and d.d_avail_cuda is not None:
             rhs = float(d.d_avail_cuda) - float(d.c_gpu)
             row = np.zeros(Nvars)
             row[idx_n(i)] = bprime
             row[idx_t(i)] = -bprime
             A_ub.append(row)
             b_ub.append(rhs)
-        if has_metal:
+
+        if d.has_metal and d.d_avail_metal is not None:
             head = 1.0 if d.is_head else 0.0
             row = np.zeros(Nvars)
             rhs = float(d.d_avail_metal) - float(d.c_gpu) - float(model.b_out * head)
