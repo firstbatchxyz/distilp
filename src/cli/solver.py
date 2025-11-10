@@ -12,10 +12,24 @@ from distilp.solver.components.loader import (
     load_devices_and_model,
     load_from_profile_folder,
 )
-from distilp.solver.halda_p_solver import halda_solve
+from distilp.solver import halda_solve
 
 
 def main() -> int:
+    class ArgsNamespace(argparse.Namespace):
+        devices: list[str] | None
+        profile: str | None
+        model: str | None
+        time_limit: float
+        max_iters: int
+        mip_gap: float
+        sdisk_threshold: float | None
+        k_candidates: list[int] | None
+        quiet: bool
+        verbose: bool
+        save_solution: str | None
+        no_plot: bool
+
     parser = argparse.ArgumentParser(
         description="Run HALDA solver for distributed LLM inference optimization",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -92,11 +106,7 @@ Examples:
         help="Disable plotting of k vs objective curve",
     )
 
-    args = parser.parse_args()
-
-    # Validate arguments
-    if args.devices and not args.model:
-        parser.error("--devices requires --model")
+    args = parser.parse_args(namespace=ArgsNamespace())
 
     try:
         if args.profile:
@@ -104,12 +114,18 @@ Examples:
             devices, model = load_from_profile_folder(args.profile)
             if not args.quiet:
                 print(f"Loaded profile from: {args.profile}")
-        else:
+        elif args.devices and args.model:
             # Load from separate files
             devices, model = load_devices_and_model(args.devices, args.model)
             if not args.quiet:
                 print(f"Loaded {len(args.devices)} device file(s) and model")
-
+        else:
+            if args.devices and not args.model:
+                parser.error("--devices requires --model")
+            else:
+                parser.error(
+                    "Either --profile or both --devices and --model must be provided."
+                )
         # Print summaries if verbose
         if args.verbose:
             print(f"\n{'=' * 60}")
@@ -148,7 +164,6 @@ Examples:
             solution_data = {
                 "k": result.k,
                 "objective_value": result.obj_value,
-                # "iterations": result.iterations,
                 "layer_distribution": {
                     dev.name: {"w": wi, "n": ni}
                     for dev, wi, ni in zip(devices, result.w, result.n)
@@ -157,7 +172,6 @@ Examples:
                     set_name: [devices[i].name for i in indices]
                     for set_name, indices in result.sets.items()
                 },
-                # "forced_M4": [devices[i].name for i in result.forced_M4],
             }
 
             with open(args.save_solution, "w") as f:

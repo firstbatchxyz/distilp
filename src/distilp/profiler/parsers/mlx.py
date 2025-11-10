@@ -43,13 +43,13 @@ def in_profile_model(
         raise RuntimeError("Unable to profile a model without a '.layers' attribute.")
 
     decoder_idx = 1
-    layers = []
+    layers: list[LayerMeta] = []
 
     # Quantization hard-coded scale and zero bytes
     scale_bytes = 2
     zero_bytes = 0
 
-    T = TypeVar("T")
+    T = TypeVar("T")  # allow `cfg_get` to have a generic return type
 
     def cfg_get(key: str, default: T | None = None) -> T:
         if key in cfg and cfg[key] is not None:
@@ -57,6 +57,7 @@ def in_profile_model(
         return getattr(config, key, default)  # type: ignore
 
     def is_excluded(path: str) -> bool:
+        nonlocal exclude_patterns
         for pat in exclude_patterns:
             try:
                 if fnmatch(path, pat):
@@ -193,10 +194,10 @@ def in_profile_model(
                                     "moe_intermediate_size",
                                     cfg_get(
                                         "expert_intermediate_size",
-                                        cfg_get("intermediate_size", None),
+                                        cfg_get("intermediate_size", 0),
                                     ),
                                 )
-                                if moe_intermediate is None or moe_intermediate == 0:
+                                if moe_intermediate == 0:
                                     raise ValueError(
                                         "MoE layer detected but no valid intermediate size found in config"
                                     )
@@ -279,7 +280,8 @@ def in_profile_model(
                                 n_shared = cfg_get(
                                     "n_shared_experts", cfg_get("num_shared_experts", 0)
                                 )
-                                shared_intermediate = cfg_get(
+                                # FIXME: or float?
+                                shared_intermediate: int | None = cfg_get(
                                     "shared_expert_intermediate_size",
                                     cfg_get(
                                         "moe_intermediate_size",
@@ -358,15 +360,15 @@ def in_profile_model(
                                 "moe_intermediate_size",
                                 cfg_get(
                                     "expert_intermediate_size",
-                                    cfg_get("intermediate_size", None),
+                                    cfg_get("intermediate_size", 0),
                                 ),
                             )
-                            if moe_intermediate is None or moe_intermediate == 0:
+                            if moe_intermediate == 0:
                                 raise ValueError(
                                     "MoE layer detected but no valid intermediate size found in config"
                                 )
                             DS = config.hidden_size * moe_intermediate
-                            num_experts_tok = cfg_get(
+                            num_experts_tok: int | None = cfg_get(
                                 "num_experts_per_tok",
                                 cfg_get(
                                     "num_experts_per_token",

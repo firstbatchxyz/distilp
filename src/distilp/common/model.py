@@ -129,36 +129,27 @@ class MoEModelProfileInfo(ModelProfileInfo):
     # Per-layer component metrics for solver assignment
     moe_layer_indices: List[int] = field(default_factory=list)  # Which layers are MoE
 
-    # Attention component (same for MoE and dense, but tracked separately for assignment)
-    attn_bytes: List[int] = field(
-        default_factory=list
-    )  # Attention weight bytes per layer
-    attn_flops: Dict[str, List[float]] = field(
-        default_factory=dict
-    )  # Attention FLOPs per layer by batch size
+    ### Attention component (same for MoE and dense, but tracked separately for assignment)
+    # Attention weight bytes per layer
+    attn_bytes: List[int] = field(default_factory=list)
+    # Attention FLOPs per layer by batch size
+    attn_flops: Dict[str, List[float]] = field(default_factory=dict)
 
-    # MoE FFN component (per layer, indexed by layer number)
-    bytes_per_expert: Dict[int, int] = field(
-        default_factory=dict
-    )  # Bytes per routed expert by layer
-    bytes_shared_experts: Dict[int, int] = field(
-        default_factory=dict
-    )  # Total bytes for shared experts by layer
-    flops_per_expert: Dict[int, float] = field(
-        default_factory=dict
-    )  # FLOPs per routed expert by layer
-    flops_shared_experts: Dict[int, float] = field(
-        default_factory=dict
-    )  # Total shared experts FLOPs by layer
-    router_flops: Dict[int, float] = field(
-        default_factory=dict
-    )  # Router/gate FLOPs by layer
-    router_bytes: Dict[int, int] = field(
-        default_factory=dict
-    )  # Router/gate weight bytes by layer
-    flops_per_active_expert_per_token: Dict[int, float] = field(
-        default_factory=dict
-    )  # Per-active-expert per-token FLOPs by layer
+    ### MoE FFN components (per layer, indexed by layer number)
+    # Bytes per routed expert by layer
+    bytes_per_expert: Dict[int, int] = field(default_factory=dict)
+    # Total bytes for shared experts by layer
+    bytes_shared_experts: Dict[int, int] = field(default_factory=dict)
+    # FLOPs per routed expert by layer
+    flops_per_expert: Dict[int, float] = field(default_factory=dict)
+    # Total shared experts FLOPs by layer
+    flops_shared_experts: Dict[int, float] = field(default_factory=dict)
+    # Router/gate FLOPs by layer
+    router_flops: Dict[int, float] = field(default_factory=dict)
+    # Router/gate weight bytes by layer
+    router_bytes: Dict[int, int] = field(default_factory=dict)
+    # Per-active-expert per-token FLOPs by layer
+    flops_per_active_expert_per_token: Dict[int, float] = field(default_factory=dict)
 
 
 @dataclass

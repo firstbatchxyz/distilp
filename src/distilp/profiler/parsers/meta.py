@@ -4,6 +4,8 @@ from typing import Any
 
 @dataclass
 class LayerMeta:
+    """Layer-level profiling metadata."""
+
     name: str = ""  # Name of the symbol
     submodules: Any = None  # Submodules decomposed into LayerMeta
     parent_layer: Any = None  # Parent Compount Layer

@@ -2,15 +2,15 @@ import sys
 import json
 import pprint
 import importlib
+import argparse
 from dataclasses import asdict
-from argparse import ArgumentParser, Namespace
 
 from distilp.profiler import profile_model_split, profile_device
 from distilp.profiler.api import load_config_from_repo
 
 
 def main() -> int:
-    class ProfilerArgs(Namespace):
+    class ArgsNamespace(argparse.Namespace):
         ret: str
         model: str | None
         repo_id: str
@@ -20,7 +20,7 @@ def main() -> int:
         max_batch_exp: int
         batches: str
 
-    parser = ArgumentParser()
+    parser = argparse.ArgumentParser()
     parser.add_argument(
         "-p",
         "--profile",
@@ -88,10 +88,9 @@ def main() -> int:
     )
 
     # Phase flag removed: we always emit split prefill/decode outputs
-    args = parser.parse_args(namespace=ProfilerArgs())
+    args = parser.parse_args(namespace=ArgsNamespace())
 
     # Load config from Hugging Face Hub using the API function
-
     if args.ret == "device":
         ret = profile_device(
             args.repo_id, args.model, args.max_batch_exp, debug=args.debug_lvl

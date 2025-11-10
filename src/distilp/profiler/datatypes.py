@@ -80,8 +80,6 @@ class SystemMemory:
     available_swap: float = 0.0
     cpu_read_cold_bw: float = 0.0
     cpu_read_warm_bw: float = 0.0
-    # cpu_rw_cold_bw: float = 0.0 # TODO: these were unused
-    # cpu_rw_warm_bw: float = 0.0 # TODO: these were unused
     cpu_write_cold_bw: float = 0.0
     cpu_write_warm_bw: float = 0.0
     memcpy_delay: float = 0.0

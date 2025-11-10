@@ -9,6 +9,10 @@ import time
 import statistics as stats
 from cpuinfo import get_cpu_info
 import fcntl
+import mlx.core as mx
+import mlx.nn as nn
+from typing import List, Dict, Callable, Literal
+
 
 from .parsers.mlx import in_profile_model
 from .datatypes import DeviceInfo
@@ -20,9 +24,6 @@ from ..common import (
     ModelProfilePhased,
 )
 
-import mlx.core as mx
-import mlx.nn as nn
-from typing import List, Dict
 
 # from src.utils.logger import logger
 
@@ -99,7 +100,7 @@ def _mlx_batched_gemm_benchmark(
             mx.eval(c)
         mx.synchronize()
 
-        times = []
+        times: list[float] = []
         for _ in range(iters):
             t0 = time.perf_counter()
             c = mx.matmul(a, b)
@@ -180,8 +181,8 @@ def run_gpu_benchmarks(device_info, n_embd: int, max_batch_exp: int, debug):
             )
 
 
-def bench(fn, stream, name="", warmup=3, iters=10, debug=0):
-    times = []
+def bench(fn: Callable, stream, name="", warmup=3, iters=10, debug=0):
+    times: list[float] = []
     for _ in range(warmup):
         mx.synchronize()
         mx.eval(fn())
@@ -208,7 +209,6 @@ def bench(fn, stream, name="", warmup=3, iters=10, debug=0):
     return stats.median(times)
 
 
-# type: ignore
 def bench_cpu_to_gpu_transfers(di, n_embd, debug):
     if _has_cupy:  # Benchmark VRAM <-> RAM through CUDA
         N = n_embd if n_embd >= 4096 else 4096
@@ -357,12 +357,6 @@ def _estimate_layer_file_bytes_from_config(config, di) -> int:
     return max(min_bytes, min(est_bytes, max_bytes))
 
 
-def _m_from_file_bytes(target_bytes: int) -> int:
-    M = int(round((target_bytes / 4.0) ** (1.0 / 3.0)))
-    align = 16
-    return max(128, (M + align - 1) // align * align)
-
-
 def bench_disk_mainfs(di, iter=10, reads=200, debug=0, config=None):
     """
     Simplified disk benchmark: one sequential-read estimate using a single file.
@@ -450,8 +444,7 @@ def get_sysmem_info(device_info: DeviceInfo, debug):
     import numpy as np
 
     sm = psutil.swap_memory()
-    # mx_cpu = mx.Device(type=mx.cpu) # FIXME: use this for the op below?
-    mx.set_default_device(mx.cpu)
+    mx.set_default_device(mx.Device(type=mx.cpu))
     vm = psutil.virtual_memory()
     device_info.memory.total = vm.total  # bytes
     device_info.memory.available = vm.available  # bytes
@@ -464,20 +457,24 @@ def get_sysmem_info(device_info: DeviceInfo, debug):
     B = np.random.randn(M, M, M)
     bytes_A = M * M * M * 4
 
+    def __cpu_read_cold_bw():
+        nonlocal A
+        return mx.max(A)
+
     device_info.memory.cpu_read_cold_bw = bytes_A / bench(
-        lambda: mx.max(A), mx.cpu, "cpy_read_cold_bw", 0, 1, debug
+        __cpu_read_cold_bw, mx.cpu, "cpy_read_cold_bw", 0, 1, debug
     )  # bytes/s
 
     t = 4
     parts = mx.split(A, t)
-    streams = [mx.new_stream(mx.cpu) for _ in range(t)]
+    streams = [mx.new_stream(mx.Device(type=mx.cpu)) for _ in range(t)]
 
-    # def parallel_read_hot():
-    #     return [mx.eval(mx.abs(p, stream=s)) for p, s in zip(parts, streams)]
-    # device_info.memory.cpu_read_warm_bw = bytes_A/bench(lambda: parallel_read_hot())  # bytes/s
+    def __cpu_read_warm_bw():
+        nonlocal A
+        return mx.abs(A)
 
     device_info.memory.cpu_read_warm_bw = bytes_A / bench(
-        lambda: mx.abs(A), mx.cpu, "cpu_read_warm_bw", 5, 10, debug
+        __cpu_read_warm_bw, mx.cpu, "cpu_read_warm_bw", 5, 10, debug
     )  # bytes/s
 
     device_info.memory.cpu_write_cold_bw = bytes_A / bench(
@@ -498,8 +495,12 @@ def get_sysmem_info(device_info: DeviceInfo, debug):
         debug,
     )
 
+    def __memcpy_delay():
+        nonlocal B
+        return mx.array(B)
+
     device_info.memory.memcpy_delay = 1000 * bench(
-        lambda: mx.eval(mx.array(B)), mx.cpu, "memcpy_delay", debug=debug
+        __memcpy_delay, mx.cpu, "memcpy_delay", debug=debug
     )
 
     # Clean up memory
@@ -518,7 +519,8 @@ def metal_get_memory_info(device_info, debug):
         device_info.gpu.memory.total = vm.total  # bytes
         device_info.gpu.memory.free = vm.available  # bytes
         # bench_gpu_transfer_times(device_info)
-    # Skip the intel macbooks for now
+
+    # TODO: skipping the intel macbooks for now
 
 
 # Get memory information
@@ -543,7 +545,7 @@ def cuda_bench_mem_to_compute(di, debug):
 # Best aproximation, still short of ~100GB/s expected
 def metal_bench_mem_to_compute(di, debug):
     M = 512
-    s_gpu = mx.new_stream(mx.gpu)
+    s_gpu = mx.new_stream(device=mx.Device(type=mx.gpu))
 
     # Randomize to escape caching
     A = mx.random.normal((8 * M, M, M), dtype=mx.float32, stream=s_gpu)
@@ -602,6 +604,8 @@ def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfil
         debug (int): Debug level for verbose output.
         max_batch_exp (int): Maximum batch exponent for throughput tables.
         is_head (bool): Whether this device is the head node (has the first layer)
+
+    `is_head` defaults to True for single-device profiling.
     """
     device_info = profile(config, max_batch_exp, debug)
     ret = DeviceProfileInfo()
@@ -936,7 +940,7 @@ def profile_moe_model(
     config_dict: Dict = {},
     debug=0,
     bs_list: List[int] = [],
-    phase: str = "merged",
+    phase: Literal["merged", "prefill", "decode"] = "merged",
 ):
     """
     Profile an MoE model with component-level metrics for solver assignment.
@@ -1334,7 +1338,7 @@ def profile_model_phased(
     debug=0,
     bs_list: List[int] = [],
 ):
-    # Use profile_moe_model which auto-detects MoE models
+    # use `profile_moe_model` which auto-detects MoE models
     prefill = profile_moe_model(
         model,
         config,
@@ -1376,9 +1380,7 @@ def profile_model_split(
         debug=debug,
         bs_list=bs_list,
     )
-
-    pre = phased.prefill
-    dec = phased.decode
+    pre, dec = phased.prefill, phased.decode
 
     # Create base split result
     result = ModelProfileSplit(
@@ -1405,7 +1407,7 @@ def profile_model_split(
         quantization=pre.quantization,
     )
 
-    # If this is an MoE model, populate MoE fields
+    # if this is an MoE model, populate MoE fields with the prefill
     if isinstance(pre, MoEModelProfileInfo):
         result.is_moe = True
         result.n_routed_experts = pre.n_routed_experts
