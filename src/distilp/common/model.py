@@ -6,8 +6,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional, List
 
-from . import QuantPerf
-
 
 # TODO: this is used by solver
 # all else used by profiler
@@ -30,8 +28,8 @@ class ModelProfile:
     V: int  # vocabulary size,   V
 
     # FLOPs per layer per batch_size, and for the output layer:
-    f_q: Dict[str, QuantPerf]  # (batch_size, f_q) (per "typical" layer), per batch size
-    f_out: Dict[str, QuantPerf]  # (batch_size,f_{q, out})   (for output layer)
+    f_q: Dict[str, float]  # (batch_size, f_q) (per "typical" layer), per batch size
+    f_out: Dict[str, float]  # (batch_size, f_{q, out})   (for output layer)
     Q: Literal[
         "Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"
     ]  # Model quantization level (e.g., "Q4_K", "MXFP4", etc.)
@@ -88,9 +86,9 @@ class ModelProfileInfo:
     """
 
     # Per-layer metrics
-    b: List[int] = []  # bytes per layer (weights)
-    b_i: List[int] = []  # input bytes per layer (base batch)
-    b_o: List[int] = []  # output bytes per layer (base batch)
+    b: List[int] = field(default_factory=list)  # bytes per layer (weights)
+    b_i: List[int] = field(default_factory=list)  # input bytes per layer (base batch)
+    b_o: List[int] = field(default_factory=list)  # output bytes per layer (base batch)
     # FLOPs per layer for each batch size (e.g., {'b_1': [...], 'b_2': [...]})
     f_q: Dict[str, List[float]] = field(default_factory=dict)
 

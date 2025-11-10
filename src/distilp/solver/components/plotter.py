@@ -36,7 +36,7 @@ def plot_k_curve(
     plt.title(title)
     # plt.grid(True)
 
-    # FIXME: enable this
+    # TODO: enable this
     # if k_star is not None:
     #     plt.axvline(k_star, linestyle="--")
     #     # Mark the point if it exists among the plotted ks

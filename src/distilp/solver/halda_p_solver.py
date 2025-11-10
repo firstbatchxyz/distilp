@@ -53,7 +53,9 @@ def _kv_bits_to_factor(kv_bits: str) -> float:
         return 1.0
     if s in ("fp16", "bf16"):
         return 2.0
-    raise ValueError(f"Unsupported kv_bits '{kv_bits}'. Use one of: 4bit, 8bit, fp16, bf16")
+    raise ValueError(
+        f"Unsupported kv_bits '{kv_bits}'. Use one of: 4bit, 8bit, fp16, bf16"
+    )
 
 
 def solve_fixed_k_milp(
@@ -158,7 +160,7 @@ def solve_fixed_k_milp(
     lb[idx_C] = 0.0
     ub[idx_C] = np.inf
 
-    bounds = Bounds(lb, ub)
+    bounds = Bounds(lb, ub)  # type: ignore (ub/lb arrays are allowed)
 
     integrality = np.ones(Nvars, dtype=int)  # integers by default
     # NEW: make z_i and C continuous
@@ -166,7 +168,6 @@ def solve_fixed_k_milp(
         integrality[idx_z(i)] = 0
     integrality[idx_C] = 0
 
-    
     # Constraints
     A_ub = []
     b_ub = []
@@ -205,12 +206,12 @@ def solve_fixed_k_milp(
         row = np.zeros(Nvars)
         row += devs[i].t_comm
         row += c_vec[i]
-        row[idx_w(i)] = float(a[i])   # sec/layer including comms
-        row[idx_n(i)] = float(b[i])   # (can be negative) GPU delta
+        row[idx_w(i)] = float(a[i])  # sec/layer including comms
+        row[idx_n(i)] = float(b[i])  # (can be negative) GPU delta
         row[idx_s1(i)] = float(penM1)
         row[idx_s2(i)] = float(penM2)
         row[idx_s3(i)] = float(penM3)
-        row[idx_t(i)]  = float(penVRAM)
+        row[idx_t(i)] = float(penVRAM)
         return row
 
     def fetch_row_for(i: int) -> np.ndarray:
@@ -233,7 +234,10 @@ def solve_fixed_k_milp(
 
     # M2: b' * w_i <= d_avail_metal - bcio - c_gpu + b' * s2_i
     for i in sets.get("M2", []):
-        dav_metal = float(devs[i].d_avail_metal)
+        d_avail_metal = devs[i].d_avail_metal
+        if d_avail_metal is None:
+            continue
+        dav_metal = float(d_avail_metal)
         rhs_cap = dav_metal - float(bcio(i)) - float(devs[i].c_gpu)
         row = np.zeros(Nvars)
         row[idx_w(i)] = bprime
@@ -244,7 +248,7 @@ def solve_fixed_k_milp(
     # M3: b' * (w_i - n_i) <= d_avail_ram + dswap - bcio + b' * s3_i
     for i in sets.get("M3", []):
         d = devs[i]
-        dswap = (min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0)
+        dswap = min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
         rhs_cap = float(d.d_avail_ram + dswap) - float(bcio(i))
         row = np.zeros(Nvars)
         row[idx_w(i)] = bprime
@@ -278,14 +282,14 @@ def solve_fixed_k_milp(
         # (1) C >= B_i + z_i  ->  -B_i - z_i + C >= 0  -> add as <= 0 by multiplying -1
         row1 = -busy_row_for(i)
         row1[idx_z(i)] += -1.0
-        row1[idx_C]    +=  1.0
+        row1[idx_C] += 1.0
         A_ub.append(-row1)
         b_ub.append(0.0)
 
         # (2) z_i >= F_i - (C - B_i) -> z_i - B_i + C - F_i >= 0 -> add as <= 0 with -1
         row2 = np.zeros(Nvars)
         row2[idx_z(i)] = 1.0
-        row2[idx_C]    = 1.0
+        row2[idx_C] = 1.0
         row2 -= busy_row_for(i)
         row2 -= fetch_row_for(i)  # bring F_i to LHS
         A_ub.append(-row2)
@@ -295,17 +299,16 @@ def solve_fixed_k_milp(
     if A_ub:
         A_ub = np.vstack(A_ub)
         b_ub = np.asarray(b_ub, dtype=float)
-        constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))
+        constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))  # type: ignore (ub/lb arrays are allowed)
     if A_eq:
         A_eq = np.vstack(A_eq)
         b_eq = np.asarray(b_eq, dtype=float)
-        constraints.append(LinearConstraint(A_eq, b_eq, b_eq))
+        constraints.append(LinearConstraint(A_eq, b_eq, b_eq))  # type: ignore (ub/lb arrays are allowed)
 
-    
     # Objective: minimize cycle time C + penalties
     c_obj = np.zeros(Nvars)
     # Minimize k * C (steady-state cycle time scaled by k)
-    c_obj[idx_C] = float(k-1)
+    c_obj[idx_C] = float(k - 1)
 
     for i in range(M):
         # No direct cost on w_i or n_i; they influence objective via C through constraints
@@ -325,7 +328,7 @@ def solve_fixed_k_milp(
         c_obj[idx_s1(i)] = penM1
         c_obj[idx_s2(i)] = penM2
         c_obj[idx_s3(i)] = penM3
-        c_obj[idx_t(i)]  = penVRAM
+        c_obj[idx_t(i)] = penVRAM
 
     options = {}
     if time_limit is not None:
@@ -350,10 +353,15 @@ def solve_fixed_k_milp(
 
     # Full objective value with constants
     linear_val = float(c_obj.dot(x))
-    obj_value = linear_val + total_inter_comm_time_per_round + sum(float(ci) for ci in c_vec) + kappa
+    obj_value = (
+        linear_val
+        + total_inter_comm_time_per_round
+        + sum(float(ci) for ci in c_vec)
+        + kappa
+    )
 
     # Optional: print only non-zero decision variables
-    #for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
+    # for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
     #    if w_i > 0:
     #        print(f"w[{i}] {float(w_i)}")
     #    if n_i > 0:

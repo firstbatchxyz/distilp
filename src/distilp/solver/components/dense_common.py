@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Literal
 import math
 
-from ...common import DeviceProfile, ModelProfile, QuantPerf
+from ...common import DeviceProfile, ModelProfile
 
 
 def valid_factors_of_L(L: int) -> List[int]:
@@ -47,8 +47,8 @@ def b_prime(
 
 
 def _sum_f_over_S(
-    f_by_q: Dict[str, QuantPerf],
-    S_by_q: Dict[str, QuantPerf],
+    f_by_q: Dict[str, float],
+    S_by_q: Dict[str, Dict[str, float]],  # dict[str, dict[str, dict[str, float]]]
     q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"],
     batch_size: int = 1,
 ) -> float:
@@ -60,17 +60,11 @@ def _sum_f_over_S(
     batch_key = f"b_{batch_size}"
     total = 0.0
     if batch_key in f_by_q and q in S_by_q:
-        # Handle new format where S_by_q[q] is a dict with batch sizes
-        if isinstance(S_by_q[q], dict):
-            if batch_key not in S_by_q[q]:
-                raise ValueError(
-                    f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]"
-                )
-            s_val = S_by_q[q][batch_key]
-        else:
-            # Old format compatibility - direct float values
-            # Get rid of this branch once all data is updated
-            s_val = S_by_q[q]
+        if batch_key not in S_by_q[q]:
+            raise ValueError(
+                f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]"
+            )
+        s_val = S_by_q[q][batch_key]
 
         # Handle f_by_q which might also have batch sizes in future
         if isinstance(f_by_q, dict):
@@ -80,13 +74,12 @@ def _sum_f_over_S(
                 )
             f_val = f_by_q[batch_key]
 
-        # FIXME: error here
-        if s_val > 0:  # type: ignore FIXME: !!!
-            total += f_val / s_val  # type: ignore FIXME: !!!
+        if s_val > 0:
+            total += f_val / s_val
     return total
 
 
-def _gpu_table(dev: DeviceProfile) -> Optional[QuantPerf]:
+def _gpu_table(dev: DeviceProfile) -> Optional[Dict[str, Dict[str, float]]]:
     """
     Pick the GPU FLOPS table for this device (Metal preferred when present).
     """
@@ -116,14 +109,14 @@ def alpha_beta_xi(
     """
     bprime = b_prime(model, kv_bits_k=kv_factor)
     # α_m (CPU path)
-    comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)  # type: ignore FIXME: !!!
+    comp_cpu = _sum_f_over_S(model.f_q, dev.scpu, model.Q)
     alpha = comp_cpu + dev.t_kvcpy_cpu + (bprime / dev.T_cpu)
 
     # β_m (GPU minus CPU path), 0 if no GPU available
     S_gpu = _gpu_table(dev)
     T_gpu = _pick_T_gpu(dev)
     if S_gpu is not None and T_gpu is not None:
-        comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu  # type: ignore FIXME: !!!
+        comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu
         beta = (
             comp_gpu_minus_cpu
             + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
@@ -237,7 +230,7 @@ def kappa_constant(
     head_idx = next((i for i, d in enumerate(devs) if d.is_head), 0)
     head = devs[head_idx]
 
-    head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)  # type: ignore FIXME: !!!
+    head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)
     head_load_regs = (model.b_in / model.V + model.b_out) / head.T_cpu
     head_disk_in = model.b_in / (model.V * head.s_disk)
     head_disk_out = (

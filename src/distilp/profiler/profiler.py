@@ -12,7 +12,13 @@ import fcntl
 
 from .parsers.mlx import in_profile_model
 from .datatypes import DeviceInfo
-from ..common import DeviceProfileInfo
+from ..common import (
+    DeviceProfileInfo,
+    ModelProfileInfo,
+    MoEModelProfileInfo,
+    ModelProfileSplit,
+    ModelProfilePhased,
+)
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -202,6 +208,7 @@ def bench(fn, stream, name="", warmup=3, iters=10, debug=0):
     return stats.median(times)
 
 
+# type: ignore
 def bench_cpu_to_gpu_transfers(di, n_embd, debug):
     if _has_cupy:  # Benchmark VRAM <-> RAM through CUDA
         N = n_embd if n_embd >= 4096 else 4096
@@ -586,7 +593,16 @@ def profile(config, max_batch_exp, debug) -> DeviceInfo:
 
 
 # Get device information in solver variable names
-def profile_device(config, debug, max_batch_exp=6) -> DeviceProfileInfo:
+def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfileInfo:
+    """
+    Profile the device and return device-specific information.
+
+    Args:
+        config: Model configuration object with attributes like hidden_size.
+        debug (int): Debug level for verbose output.
+        max_batch_exp (int): Maximum batch exponent for throughput tables.
+        is_head (bool): Whether this device is the head node (has the first layer)
+    """
     device_info = profile(config, max_batch_exp, debug)
     ret = DeviceProfileInfo()
 
@@ -618,19 +634,19 @@ def profile_device(config, debug, max_batch_exp=6) -> DeviceProfileInfo:
         ret.os_type = "linux"  # Default fallback
 
     # Set is_head to True by default (single device scenario)
-    ret.is_head = True
+    ret.is_head = is_head
 
     # CPU throughput tables (FLOPS)
     scpu_dtypes = ["f32", "fp16", "bf16"]
     scpu_batches = [f"b_{2**n}" for n in range(max_batch_exp)]
     ret.scpu = {}
-    for type in scpu_dtypes:
-        ret.scpu.update({"type": {}})
-        di_type = getattr(device_info.cpu.benchmarks, type)
+    for dtype in scpu_dtypes:
+        ret.scpu.update({dtype: {}})
+        di_type = getattr(device_info.cpu.benchmarks, dtype)
         for b in scpu_batches:
-            _val = ret.scpu.get(type)
+            _val = ret.scpu.get(dtype, {})
             _val.update({b: getattr(di_type, b)})
-            ret.scpu.update({type: _val})
+            ret.scpu.update({dtype: _val})
 
     # CPU register loading throughput (bytes/s) - use warm bandwidth
     ret.T_cpu = device_info.memory.cpu_read_warm_bw  # Already in bytes/s
@@ -639,13 +655,13 @@ def profile_device(config, debug, max_batch_exp=6) -> DeviceProfileInfo:
     sgpu_dtypes = ["f32", "fp16", "bf16"]
     sgpu_batches = [f"b_{2**n}" for n in range(max_batch_exp)]
     _field = {}
-    for type in sgpu_dtypes:
-        _field.update({type: {}})
-        di_type = getattr(device_info.gpu.benchmarks, type)
+    for dtype in sgpu_dtypes:
+        _field.update({dtype: {}})
+        di_type = getattr(device_info.gpu.benchmarks, dtype)
         for b in sgpu_batches:
-            _val = _field.get(type)
+            _val = _field.get(dtype, {})
             _val.update({b: getattr(di_type, b)})
-            _field.update({type: _val})
+            _field.update({dtype: _val})
 
     # CUDA memory throughput (bytes/s)
     if ret.has_cuda:
@@ -1128,7 +1144,7 @@ def profile_moe_model(
                                     getattr(
                                         config,
                                         "num_selected_experts",
-                                        getattr(config, "top_k", None),
+                                        getattr(config, "top_k", 0),
                                     ),
                                 ),
                             ),
@@ -1139,7 +1155,7 @@ def profile_moe_model(
         ),
     )
 
-    if ret.experts_per_token is None or ret.experts_per_token == 0:
+    if ret.experts_per_token == 0:
         raise ValueError(
             "MoE model detected but experts_per_token not found or is 0. "
             "Config must have one of: num_experts_per_tok, experts_per_token, "
@@ -1164,7 +1180,7 @@ def profile_moe_model(
                             getattr(
                                 config,
                                 "intermediate_size",
-                                getattr(config, "ffn_dim", None),
+                                getattr(config, "ffn_dim", 0),
                             ),
                         ),
                     ),
@@ -1173,7 +1189,7 @@ def profile_moe_model(
         ),
     )
 
-    if ret.moe_intermediate_size is None or ret.moe_intermediate_size == 0:
+    if ret.moe_intermediate_size == 0:
         raise ValueError(
             "MoE model detected but no valid intermediate/FFN size found. "
             "Config must have one of: moe_intermediate_size, expert_intermediate_size, "

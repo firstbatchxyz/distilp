@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
+
 @dataclass
 class CPUTopology:
     packages: int = 1
@@ -122,14 +123,14 @@ class GPUMemory:
 
 @dataclass
 class GPUInfo:
-    name: Literal["cuda", "metal", ""] = "" # "cuda" | "metal" | "" (none)
+    name: Literal["cuda", "metal", ""] = ""  # "cuda" | "metal" | "" (none)
     memory: GPUMemory = field(default_factory=GPUMemory)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
 
 
 @dataclass
 class DeviceInfo:
-    os: str = "" # 'linux' | 'windows' | ... | "" (none)
+    os: str = ""  # 'linux' | 'windows' | ... | "" (none)
     # empty string is also how `platform.system()` indicates unknown OS
     cpu: CPUInfo = field(default_factory=CPUInfo)
     gpu: GPUInfo = field(default_factory=GPUInfo)

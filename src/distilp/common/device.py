@@ -3,10 +3,8 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Optional
-
-from . import QuantPerf, QuantPerfOther
+from dataclasses import dataclass, field
+from typing import Dict, Optional
 
 
 # TODO: this is used by solver
@@ -25,7 +23,7 @@ class DeviceProfile:
     has_metal: bool  # I_metal
 
     # Throughput tables (FLOPS) per quantization for CPU/GPU paths
-    scpu: QuantPerf  # s^{cpu}_{m,q}
+    scpu: Dict[str, Dict[str, float]]  # s^{cpu}_{m,q}
     T_cpu: float  # T^{cpu}_m (register loading throughput, bytes/s)
 
     # KV-copy times (sec) for a fixed kv_bits *(h_k e_k + h_v e_v) * n_kv byte payload
@@ -43,8 +41,8 @@ class DeviceProfile:
     # Available memories / working sets (bytes)
     d_avail_ram: int  # d^{avail}_m (RAM)
     # --- optional (come after required) ---
-    sgpu_cuda: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for CUDA
-    sgpu_metal: Optional[QuantPerf] = None  # s^{gpu}_{m,q} for Metal
+    sgpu_cuda: Optional[Dict[str, Dict[str, float]]] = None  # s^{gpu}_{m,q} for CUDA
+    sgpu_metal: Optional[Dict[str, Dict[str, float]]] = None  # s^{gpu}_{m,q} for Metal
     T_cuda: Optional[float] = None  # T^{gpu}_m for CUDA (bytes/s)
     T_metal: Optional[float] = None  # T^{gpu}_m for Metal (bytes/s)
     d_avail_cuda: Optional[int] = None  # d^{avail}_{m,cuda} (VRAM)
@@ -77,7 +75,6 @@ class DeviceProfile:
         print(f"   Disk Speed: {self.s_disk / (1024**2):.1f} MB/s")
 
 
-# TODO: QuantPerfOther vs QuantPerf?
 @dataclass
 class DeviceProfileInfo:
     """
@@ -86,7 +83,7 @@ class DeviceProfileInfo:
     """
 
     # --- required (no defaults) ---
-    name: str = ""
+    name: str = ""  # Device name
     os_type: str = ""  # 'mac_no_metal' | 'mac_metal' | 'linux' | 'android'
     is_head: bool = True  # I_{m=1}  (True for the head device that holds input/output layers on CPU)
     is_unified_mem: bool = False  # I_UMA (Apple Silicon etc.)
@@ -94,7 +91,8 @@ class DeviceProfileInfo:
     has_metal: bool = False  # I_metal
 
     # Throughput tables (FLOPS) per quantization for CPU/GPU paths
-    scpu: QuantPerfOther = {}  # s^{cpu}_{m,q}
+    # TODO: ["f32", "fp16", "bf16"] as the first keys?
+    scpu: Dict[str, Dict[str, float]] = field(default_factory=dict)  # s^{cpu}_{m,q}
     T_cpu: float = 0.0  # T^{cpu}_m (register loading throughput, bytes/s)
 
     # KV-copy times (sec) for a fixed 2*(h_k e_k + h_v e_v)·n_kv byte payload
@@ -113,8 +111,8 @@ class DeviceProfileInfo:
     d_avail_ram: int = 0  # d^{avail}_m (RAM)
 
     # --- optional (come after required) ---
-    sgpu_cuda: Optional[QuantPerfOther] = None  # s^{gpu}_{m,q} for CUDA
-    sgpu_metal: Optional[QuantPerfOther] = None  # s^{gpu}_{m,q} for Metal
+    sgpu_cuda: Optional[Dict[str, float]] = None  # s^{gpu}_{m,q} for CUDA
+    sgpu_metal: Optional[Dict[str, float]] = None  # s^{gpu}_{m,q} for Metal
     T_cuda: Optional[float] = None  # T^{gpu}_m for CUDA (bytes/s)
     T_metal: Optional[float] = None  # T^{gpu}_m for Metal (bytes/s)
     d_avail_cuda: Optional[int] = None  # d^{avail}_{m,cuda} (VRAM)
@@ -128,6 +126,8 @@ class DeviceProfileInfo:
     d_bytes_can_swap: int = 0  # potential bytes we allow swapping
     d_swap_avail: int = 0  # actually available swap bytes
 
-    # TODO: this is removed, is it used anywhere?
-    # def json(self):
-    #     return json.dumps(asdict(self))
+    def to_json_str(self):
+        from json import dumps
+        from dataclasses import asdict
+
+        return dumps(asdict(self))

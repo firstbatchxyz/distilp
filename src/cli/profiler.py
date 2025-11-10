@@ -3,13 +3,23 @@ import json
 import pprint
 import importlib
 from dataclasses import asdict
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 
 from distilp.profiler import profile_model_split, profile_device
 from distilp.profiler.api import load_config_from_repo
 
 
 def main() -> int:
+    class ProfilerArgs(Namespace):
+        ret: str
+        model: str | None
+        repo_id: str
+        output_path: str | None
+        debug_lvl: int
+        seq_len: int
+        max_batch_exp: int
+        batches: str
+
     parser = ArgumentParser()
     parser.add_argument(
         "-p",
@@ -32,6 +42,7 @@ def main() -> int:
         "-r",
         "--repo",
         dest="repo_id",
+        required=True,
         type=str,
         help="Hugging Face repository ID to load the config from (e.g., 'Qwen/Qwen3-4B-MLX-8bit')",
     )
@@ -50,7 +61,14 @@ def main() -> int:
         type=int,
         help="Debug logging level.",
     )
-    parser.add_argument("-s", "--sequence", dest="L", type=int, help="Sequence length")
+    parser.add_argument(
+        "-s",
+        "--sequence",
+        dest="seq_len",
+        type=int,
+        default=512,
+        help="Sequence length",
+    )
     parser.add_argument(
         "--max-batch-exp",
         dest="max_batch_exp",
@@ -62,42 +80,29 @@ def main() -> int:
         "--batches",
         dest="batches",
         type=str,
-        required=True,
+        default="1,2,4",
         help=(
             "Comma-separated batch sizes for per-batch profiling (e.g., '1,2,4,8'). "
             "The first value drives the top-level fields (b_i, b_o, f_q, f_out)."
         ),
     )
-    # Phase flag removed: we always emit split prefill/decode outputs
-    args = parser.parse_args()
 
-    # Validate repository ID is provided
-    if not args.repo_id:
-        raise ValueError(
-            "Repository ID (--repo) is required to load model config from Hugging Face Hub."
-        )
+    # Phase flag removed: we always emit split prefill/decode outputs
+    args = parser.parse_args(namespace=ProfilerArgs())
 
     # Load config from Hugging Face Hub using the API function
-    config_obj, config_dict, module_name = load_config_from_repo(
-        repo_id=args.repo_id, model_name=args.model
-    )
 
     if args.ret == "device":
+        ret = profile_device(
+            args.repo_id, args.model, args.max_batch_exp, debug=args.debug_lvl
+        )
         if args.output_path is None:
-            ret = profile_device(config_obj, args.debug_lvl, args.max_batch_exp)
             pprint.pprint(ret)
-            return 1  # FIXME: why?
-        with open(args.output_path, "w") as f:
-            ret = profile_device(config_obj, args.debug_lvl, args.max_batch_exp)
-            if ret is not None:
-                f.write(ret.json())
-            else:
-                raise RuntimeError("Unable to profile device.")
-        return 1
+        else:
+            with open(args.output_path, "w") as f:
+                f.write(ret.to_json_str())
 
     elif args.ret == "model":
-        if args.output_path is None:
-            raise ValueError("No output path given.")
         # Parse batches argument into a list of ints (required)
         s = args.batches.strip()
         try:
@@ -112,24 +117,30 @@ def main() -> int:
         # Determine base batch size from --batches
         base_B = bs_list[0]
 
+        config_obj, config_dict, module_name = load_config_from_repo(
+            repo_id=args.repo_id, module_name=args.model
+        )
         # Instantiate model for profiling
         module = importlib.import_module(f"mlx_lm.models.{module_name}")
         Model = getattr(module, "Model")
         obj = Model(config_obj)
 
-        with open(args.output_path, "w") as f:
-            # Emit compact model profile with phase-split FLOPs only
-            ret = profile_model_split(
-                obj,
-                config_obj,
-                base_B,
-                int(args.L),  # FIXME: ???
-                config_dict,
-                args.debug_lvl,
-                bs_list=bs_list,
-            )
-            f.write(json.dumps(asdict(ret)))
-        return 1
+        ret = profile_model_split(
+            obj,
+            config_obj,
+            base_B,
+            args.seq_len,
+            config_dict,
+            args.debug_lvl,
+            bs_list=bs_list,
+        )
+
+        if args.output_path is None:
+            pprint.pprint(asdict(ret))
+        else:
+            with open(args.output_path, "w") as f:
+                # Emit compact model profile with phase-split FLOPs only
+                f.write(json.dumps(asdict(ret)))
 
     else:
         raise ValueError(

@@ -6,7 +6,7 @@ from .model import (
     ModelProfileSplit,
     MoEModelProfileInfo,
 )
-from .types import QuantPerf, QuantizationType, QuantPerfOther
+from .types import QuantizationType
 
 
 __all__ = [
@@ -20,7 +20,5 @@ __all__ = [
     "ModelProfileSplit",
     "MoEModelProfileInfo",
     # types
-    "QuantPerf",
     "QuantizationType",
-    "QuantPerfOther",
 ]

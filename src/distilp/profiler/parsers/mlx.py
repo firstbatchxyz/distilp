@@ -50,10 +50,11 @@ def in_profile_model(
     zero_bytes = 0
 
     T = TypeVar("T")
+
     def cfg_get(key: str, default: T | None = None) -> T:
         if key in cfg and cfg[key] is not None:
             return cfg[key]
-        return getattr(config, key, default) # type: ignore
+        return getattr(config, key, default)  # type: ignore
 
     def is_excluded(path: str) -> bool:
         for pat in exclude_patterns:
@@ -83,11 +84,13 @@ def in_profile_model(
             f"    num_hidden_layers={config.num_hidden_layers}"
         )
 
-    for l in m.layers: # type: ignore # FIXME: !!!
+    for lyr in m.layers:  # type: ignore # FIXME: !!!
         lm = LayerMeta()
-        lm.layer = l
+        lm.layer = lyr
         lm.name = f"decoder_{decoder_idx}"
-        if any(x in l.__class__.__name__ for x in ["TransformerBlock", "DecoderLayer"]):
+        if any(
+            x in lyr.__class__.__name__ for x in ["TransformerBlock", "DecoderLayer"]
+        ):
             lm.input_bytes = (B * L * config.hidden_size * a_bits) / 8
             lm.output_bytes = (B * L * config.hidden_size * a_bits) / 8
             # Tokens processed per phase
@@ -102,7 +105,7 @@ def in_profile_model(
                 tokens = tokens_prefill + tokens_decode
             if debug >= 1:
                 print(f"\nParsing [decoder.{decoder_idx}]:")
-            for name, obj in l.named_modules():
+            for name, obj in lyr.named_modules():
                 if name == "post_attention_layernorm" or name == "input_layernorm":
                     pass
 

@@ -65,7 +65,7 @@ def _resolve_module_from_config(config_dict: Dict[str, Any]) -> str:
 
 
 def load_config_from_repo(
-    repo_id: str, model_name: Optional[str] = None
+    repo_id: str, module_name: Optional[str] = None
 ) -> Tuple[Any, Dict, str]:
     """
     Load only configuration from a HuggingFace repository without creating the model.
@@ -89,7 +89,7 @@ def load_config_from_repo(
         )
 
     # Resolve module_name from config unless explicitly provided
-    module_name = model_name or _resolve_module_from_config(config_dict)
+    module_name = module_name or _resolve_module_from_config(config_dict)
 
     # Load the ModelArgs class from mlx_lm
     try:
@@ -222,7 +222,6 @@ def profile_device(
     except Exception:
         pass
 
-    # Profile the device
     device_info = _profile_device(
         config=config_obj, debug=debug, max_batch_exp=max_batch_exp
     )
