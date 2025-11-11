@@ -5,7 +5,7 @@ from typing import List, Optional
 
 from .profiler.model import profile_model_split
 from .profiler.device import profile_device as _profile_device
-from ..common import ModelProfileSplit, DeviceProfileInfo
+from ..common import ModelProfileSplit, DeviceProfile
 from .models import load_config_from_repo
 
 
@@ -60,7 +60,7 @@ def profile_device(
     repo_id: str,
     max_batch_exp: int = 6,
     debug: int = 0,
-) -> DeviceProfileInfo:
+) -> DeviceProfile:
     """
     Profile device capabilities using a model configuration from HuggingFace.
 
@@ -71,7 +71,7 @@ def profile_device(
         debug: Debug logging level (default: 0)
 
     Returns:
-        DeviceProfileInfo object with device profiling results
+        DeviceProfile object with device profiling results
 
     Example:
         >>> from src.dperf.api import profile_device

@@ -7,8 +7,7 @@ from pydantic import BaseModel
 
 
 from ...common import (
-    ModelProfileInfo,
-    MoEModelProfileInfo,
+    ModelProfile,
     ModelProfileSplit,
     ModelProfilePhased,
 )
@@ -792,14 +791,16 @@ def profile_model(
         exclude_patterns,
         fp_bits,
     )
-    ret = ModelProfileInfo()
+    ret = ModelProfile()
 
-    # Per-layer metrics (base batch)
-    ret.b = [int(x.weight_bytes) for x in model_info]
-    ret.b_i = [int(x.input_bytes) for x in model_info]
-    ret.b_o = [int(x.output_bytes) for x in model_info]
-    ret.f_q[f"b_{B}"] = [float(x.flops) for x in model_info]
-    ret.f_out[f"b_{B}"] = ret.f_q[f"b_{B}"][-1] if ret.f_q[f"b_{B}"] else 0.0
+    # Per-layer metrics (base batch) - profiler array format
+    ret.b_layers = [int(x.weight_bytes) for x in model_info]
+    ret.b_i_layers = [int(x.input_bytes) for x in model_info]
+    ret.b_o_layers = [int(x.output_bytes) for x in model_info]
+    if ret.f_q_layers is None:
+        ret.f_q_layers = {}
+    ret.f_q_layers[f"b_{B}"] = [float(x.flops) for x in model_info]
+    ret.f_out[f"b_{B}"] = ret.f_q_layers[f"b_{B}"][-1] if ret.f_q_layers[f"b_{B}"] else 0.0
     ret.seq_len = int(L)
 
     # Model-level metrics from config
@@ -836,8 +837,9 @@ def profile_model(
             exclude_patterns,
             fp_bits,
         )
-        ret.f_q[tag] = [float(x.flops) for x in layers_bx]
-        ret.f_out[tag] = ret.f_q[tag][-1] if ret.f_q[tag] else 0.0
+        if ret.f_q_layers is not None:
+            ret.f_q_layers[tag] = [float(x.flops) for x in layers_bx]
+            ret.f_out[tag] = ret.f_q_layers[tag][-1] if ret.f_q_layers[tag] else 0.0
 
     return ret
 
@@ -959,14 +961,17 @@ def profile_moe_model(
     )
 
     # Create MoE profile
-    ret = MoEModelProfileInfo()
+    ret = ModelProfile()
+    ret.is_moe = True  # Mark as MoE model
 
-    # Populate base metrics
-    ret.b = [int(x.weight_bytes) for x in model_info]
-    ret.b_i = [int(x.input_bytes) for x in model_info]
-    ret.b_o = [int(x.output_bytes) for x in model_info]
-    ret.f_q[f"b_{B}"] = [float(x.flops) for x in model_info]
-    ret.f_out[f"b_{B}"] = ret.f_q[f"b_{B}"][-1] if ret.f_q[f"b_{B}"] else 0.0
+    # Populate base metrics (profiler array format)
+    ret.b_layers = [int(x.weight_bytes) for x in model_info]
+    ret.b_i_layers = [int(x.input_bytes) for x in model_info]
+    ret.b_o_layers = [int(x.output_bytes) for x in model_info]
+    if ret.f_q_layers is None:
+        ret.f_q_layers = {}
+    ret.f_q_layers[f"b_{B}"] = [float(x.flops) for x in model_info]
+    ret.f_out[f"b_{B}"] = ret.f_q_layers[f"b_{B}"][-1] if ret.f_q_layers[f"b_{B}"] else 0.0
     ret.seq_len = int(L)
 
     # Model-level metrics
@@ -1028,10 +1033,18 @@ def profile_moe_model(
     ret.moe_layer_indices = moe_indices
     ret.total_moe_layers = len(moe_indices)
 
-    # Extract component metrics from layer
+    # Initialize MoE component metrics (optional fields need initialization)
     ret.attn_bytes = []
-    ret.attn_flops[f"b_{B}"] = []
+    ret.attn_flops = {f"b_{B}": []}
+    ret.bytes_per_expert = {}
+    ret.bytes_shared_experts = {}
+    ret.flops_per_expert = {}
+    ret.flops_shared_experts = {}
+    ret.router_flops = {}
+    ret.router_bytes = {}
+    ret.flops_per_active_expert_per_token = {}
 
+    # Extract component metrics from layers
     for idx, layer in enumerate(model_info[1:], 1):  # Skip prefill layer
         # Attention metrics (all layers have attention)
         ret.attn_bytes.append(layer.attn_bytes)
@@ -1065,9 +1078,11 @@ def profile_moe_model(
             exclude_patterns,
             fp_bits,
         )
-        ret.f_q[tag] = [float(x.flops) for x in layers_bx]
-        ret.f_out[tag] = ret.f_q[tag][-1] if ret.f_q[tag] else 0.0
-        ret.attn_flops[tag] = [float(x.attn_flops) for x in layers_bx[1:]]  # Skip prefill
+        if ret.f_q_layers is not None:
+            ret.f_q_layers[tag] = [float(x.flops) for x in layers_bx]
+            ret.f_out[tag] = ret.f_q_layers[tag][-1] if ret.f_q_layers[tag] else 0.0
+        if ret.attn_flops is not None:
+            ret.attn_flops[tag] = [float(x.attn_flops) for x in layers_bx[1:]]  # Skip prefill
 
     return ret
 
@@ -1115,11 +1130,11 @@ def profile_model_split(
     )
     pre, dec = phased.prefill, phased.decode
 
-    # Create base split result
+    # Create base split result from profiler array format
     result = ModelProfileSplit(
-        b=pre.b,
-        b_i=pre.b_i,
-        b_o=pre.b_o,
+        b=pre.b_layers or [],
+        b_i=pre.b_i_layers or [],
+        b_o=pre.b_o_layers or [],
         L=pre.L,
         hk=pre.hk,
         hv=pre.hv,
@@ -1130,8 +1145,8 @@ def profile_model_split(
         V=pre.V,
         seq_len=pre.seq_len,
         f_q={
-            "prefill": pre.f_q,
-            "decode": dec.f_q,
+            "prefill": pre.f_q_layers or {},
+            "decode": dec.f_q_layers or {},
         },
         f_out={
             "prefill": pre.f_out,
@@ -1140,8 +1155,8 @@ def profile_model_split(
         quantization=pre.quantization,
     )
 
-    # if this is an MoE model, populate MoE fields with the prefill
-    if isinstance(pre, MoEModelProfileInfo):
+    # if this is an MoE model, populate MoE fields from the prefill profile
+    if pre.is_moe:
         result.is_moe = True
         result.n_routed_experts = pre.n_routed_experts
         result.n_shared_experts = pre.n_shared_experts
@@ -1150,18 +1165,18 @@ def profile_model_split(
         result.moe_layer_freq = pre.moe_layer_freq
         result.first_k_dense_replace = pre.first_k_dense_replace
         result.total_moe_layers = pre.total_moe_layers
-        result.moe_layer_indices = pre.moe_layer_indices
-        result.attn_bytes = pre.attn_bytes
+        result.moe_layer_indices = pre.moe_layer_indices or []
+        result.attn_bytes = pre.attn_bytes or []
         result.attn_flops = {
-            "prefill": pre.attn_flops,
-            "decode": dec.attn_flops if isinstance(dec, MoEModelProfileInfo) else {},
+            "prefill": pre.attn_flops or {},
+            "decode": (dec.attn_flops or {}) if dec.is_moe else {},
         }
-        result.bytes_per_expert = pre.bytes_per_expert
-        result.bytes_shared_experts = pre.bytes_shared_experts
-        result.flops_per_expert = pre.flops_per_expert
-        result.flops_shared_experts = pre.flops_shared_experts
-        result.router_flops = pre.router_flops
-        result.router_bytes = pre.router_bytes
-        result.flops_per_active_expert_per_token = pre.flops_per_active_expert_per_token
+        result.bytes_per_expert = pre.bytes_per_expert or {}
+        result.bytes_shared_experts = pre.bytes_shared_experts or {}
+        result.flops_per_expert = pre.flops_per_expert or {}
+        result.flops_shared_experts = pre.flops_shared_experts or {}
+        result.router_flops = pre.router_flops or {}
+        result.router_bytes = pre.router_bytes or {}
+        result.flops_per_active_expert_per_token = pre.flops_per_active_expert_per_token or {}
 
     return result

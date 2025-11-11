@@ -15,9 +15,7 @@ from typing import Any, Callable
 from distilp.profiler.models import MLX_ModelArgs
 
 from ..datatypes import DeviceInfo
-from ...common import (
-    DeviceProfileInfo,
-)
+from ...common import DeviceProfile
 
 try:
     import cupy as cp  # type: ignore | optional dep
@@ -575,7 +573,7 @@ def profile(config: MLX_ModelArgs, max_batch_exp, debug) -> DeviceInfo:
 
 
 # Get device information in solver variable names
-def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) -> DeviceProfileInfo:
+def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) -> DeviceProfile:
     """
     Profile the device and return device-specific information.
 
@@ -588,7 +586,7 @@ def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) 
     `is_head` defaults to True for single-device profiling.
     """
     device_info = profile(config, max_batch_exp, debug)
-    ret = DeviceProfileInfo()
+    ret = DeviceProfile()
 
     # Set device name (hostname or identifier)
     ret.name = platform.node() or "device"

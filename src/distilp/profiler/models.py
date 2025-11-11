@@ -15,6 +15,9 @@ import mlx_lm.models.qwen3_moe as QWEN3_MOE
 import mlx_lm.models.gemma2 as GEMMA2
 
 
+# import mlx_lm.models.deepseek_v2 as DEEPSEEK_V2
+
+
 # Minimal aliasing from HF model_type to mlx_lm.models module names
 type MODEL_ARCHS = Literal[
     "llama",
