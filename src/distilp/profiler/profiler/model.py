@@ -6,12 +6,8 @@ from typing import Any
 from pydantic import BaseModel
 
 
-from ...common import (
-    ModelProfile,
-    ModelProfileSplit,
-    ModelProfilePhased,
-)
-from ...common.model import QuantizationLevel, ModelPhase
+from ...common import ModelProfile, ModelProfileSplit, ModelProfilePhased, QuantizationLevel
+from ...common.model import ModelPhase
 from ..models import MLX_ModelArgs
 
 

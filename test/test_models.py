@@ -29,12 +29,25 @@ ALL_MODELS = [
 def test_profile_all_models_sanity():
     # uv run pytest -v -k test_profile_all_models_sanity -s
     for repo in ALL_MODELS:
+        print(f"Profiling model: {repo}")
         data = profile_model(repo, batch_sizes=batch_sizes, sequence_length=seq_len)
         assert data.L > 0
         assert data.V > 0
         assert data.e_embed > 0
         assert data.ek > 0
         assert data.ev > 0
+        assert data.b[1] > 0
+        assert data.b_i[1] > 0
+        assert data.f_q["decode"]["b_1"][1] > 0
+        assert data.quantization in [
+            "Q4_K",
+            "Q5_K",
+            "Q6_K",
+            "Q8_0",
+            "F16",
+            "BF16",
+            "F32",
+        ]
         print(f"Profiled {repo} successfully.")
 
 

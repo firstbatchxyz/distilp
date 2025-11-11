@@ -3,12 +3,10 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from typing import Dict, Literal, Optional, List
+from typing import Dict, Optional, List
 from pydantic import BaseModel, Field
 
-from . import QuantizationLevel
-
-type ModelPhase = Literal["merged", "prefill", "decode"]
+from .types import QuantizationLevel, ModelPhase
 
 
 class ModelProfile(BaseModel):
