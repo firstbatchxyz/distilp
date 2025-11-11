@@ -21,7 +21,7 @@ from distilp.solver import halda_solve
 @pytest.fixture
 def test_repo_id():
     """Use a small model for fast testing."""
-    return "Qwen/Qwen2.5-0.5B-Instruct"
+    return "Qwen/Qwen3-14B-MLX-8bit"
 
 
 @pytest.fixture
@@ -85,12 +85,12 @@ def test_profile_and_solve_workflow(device_profile_json, model_profile_json):
 
         # Load profiles using solver's loader (as solver CLI does)
         devices, model = load_devices_and_model(
-            device_files=[str(device_path)],
+            device_files=[str(device_path), str(device_path)],  # Load same device twice for testing
             model_file=str(model_path),
         )
 
         # Validate loaded profiles
-        assert len(devices) == 1, "Should have loaded 1 device"
+        assert len(devices) == 2, "Should have loaded 2 devices"
         assert devices[0].name != "", "Device should have a name"
         assert model.L > 0, "Model should have layers"
         assert model.V > 0, "Model should have vocabulary"
@@ -109,7 +109,7 @@ def test_profile_and_solve_workflow(device_profile_json, model_profile_json):
         assert result.k > 0, "Solution should have k > 0"
         assert result.obj_value >= 0, "Objective value should be non-negative"
         assert len(result.w) == len(devices), "Should have layer assignment for each device"
-        assert sum(result.w) == model.L, "All layers should be assigned"
+        assert sum(result.w) * result.k == model.L, "All layers should be assigned"
 
         # Print solution for visibility
         print(f"\nSolution: k={result.k}, objective={result.obj_value:.6f}")
