@@ -1,5 +1,5 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from pydantic import BaseModel
 from typing import Dict, List, Optional, Tuple, Literal
 import math
 
@@ -246,16 +246,14 @@ def kappa_constant(
     return head_compute + head_load_regs + head_disk_in + head_disk_out + tail_const
 
 
-@dataclass
-class ILPResult:
+class ILPResult(BaseModel):
     k: int
     w: List[int]
     n: List[int]
     obj_value: float
 
 
-@dataclass
-class HALDAResult:
+class HALDAResult(BaseModel):
     w: List[int]
     n: List[int]
     k: int

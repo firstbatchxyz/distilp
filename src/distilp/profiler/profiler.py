@@ -45,7 +45,7 @@ def get_os(device_info):
 def fill_cpu_info(di, debug):
     info = get_cpu_info()
     di.cpu.model = info["brand_raw"]
-    di.cpu.arch = ["arch_string_raw"]
+    di.cpu.arch = info["arch_string_raw"]
 
     # cpuid instruction only on x86
     if info["arch_string_raw"] in ["x86_64", "amd64"]:
@@ -88,7 +88,15 @@ def fill_cpu_info(di, debug):
 # Only the A tensor is batched, B is shared. Emulating inference
 # Note: take tensors as argument to cut the cost of initializing them, all tests are hot in memory anyway
 def _mlx_batched_gemm_benchmark(
-    device, B, N, M, K, warmup=3, iters=10, dtype=mx.float16, debug=0
+    device,
+    B: int,
+    N: int,
+    M: int,
+    K: int,
+    warmup: int = 3,
+    iters: int = 10,
+    dtype: mx.Dtype = mx.float16,
+    debug: int = 0,
 ):
     try:
         mx.set_default_device(device)

@@ -3,14 +3,13 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
 from typing import Dict, Literal, Optional, List
+from pydantic import BaseModel, Field
 
 
 # TODO: this is used by solver
 # all else used by profiler
-@dataclass
-class ModelProfile:
+class ModelProfile(BaseModel):
     """
     Model-global constants (bytes, sizes, FLOPs) from profiler.
     """
@@ -79,18 +78,17 @@ class ModelProfile:
         print(f"  Quantizations: {', '.join(self.Q)}")
 
 
-@dataclass
-class ModelProfileInfo:
+class ModelProfileInfo(BaseModel):
     """
     Model-global constants (bytes, sizes, FLOPs) from profiler.
     """
 
     # Per-layer metrics
-    b: List[int] = field(default_factory=list)  # bytes per layer (weights)
-    b_i: List[int] = field(default_factory=list)  # input bytes per layer (base batch)
-    b_o: List[int] = field(default_factory=list)  # output bytes per layer (base batch)
+    b: List[int] = Field(default_factory=list)  # bytes per layer (weights)
+    b_i: List[int] = Field(default_factory=list)  # input bytes per layer (base batch)
+    b_o: List[int] = Field(default_factory=list)  # output bytes per layer (base batch)
     # FLOPs per layer for each batch size (e.g., {'b_1': [...], 'b_2': [...]})
-    f_q: Dict[str, List[float]] = field(default_factory=dict)
+    f_q: Dict[str, List[float]] = Field(default_factory=dict)
 
     # Model-level metrics (new fields)
     L: int = 0  # total layers
@@ -105,12 +103,11 @@ class ModelProfileInfo:
     # Quantization level label for this model/profile
     quantization: str = ""  # One of: Q4_K, Q5_K, Q6_K, Q8_0, BF16, F16, F32
     # Output-layer FLOPs per batch size (e.g., {'b_1': 123.0})
-    f_out: Dict[str, float] = field(default_factory=dict)
+    f_out: Dict[str, float] = Field(default_factory=dict)
     # Sequence length used for profiling
     seq_len: int = 0
 
 
-@dataclass
 class MoEModelProfileInfo(ModelProfileInfo):
     """
     MoE-specific model profile with component-level metrics for solver assignment.
@@ -127,39 +124,37 @@ class MoEModelProfileInfo(ModelProfileInfo):
     total_moe_layers: int = 0  # Total number of MoE layers in the model
 
     # Per-layer component metrics for solver assignment
-    moe_layer_indices: List[int] = field(default_factory=list)  # Which layers are MoE
+    moe_layer_indices: List[int] = Field(default_factory=list)  # Which layers are MoE
 
     ### Attention component (same for MoE and dense, but tracked separately for assignment)
     # Attention weight bytes per layer
-    attn_bytes: List[int] = field(default_factory=list)
+    attn_bytes: List[int] = Field(default_factory=list)
     # Attention FLOPs per layer by batch size
-    attn_flops: Dict[str, List[float]] = field(default_factory=dict)
+    attn_flops: Dict[str, List[float]] = Field(default_factory=dict)
 
     ### MoE FFN components (per layer, indexed by layer number)
     # Bytes per routed expert by layer
-    bytes_per_expert: Dict[int, int] = field(default_factory=dict)
+    bytes_per_expert: Dict[int, int] = Field(default_factory=dict)
     # Total bytes for shared experts by layer
-    bytes_shared_experts: Dict[int, int] = field(default_factory=dict)
+    bytes_shared_experts: Dict[int, int] = Field(default_factory=dict)
     # FLOPs per routed expert by layer
-    flops_per_expert: Dict[int, float] = field(default_factory=dict)
+    flops_per_expert: Dict[int, float] = Field(default_factory=dict)
     # Total shared experts FLOPs by layer
-    flops_shared_experts: Dict[int, float] = field(default_factory=dict)
+    flops_shared_experts: Dict[int, float] = Field(default_factory=dict)
     # Router/gate FLOPs by layer
-    router_flops: Dict[int, float] = field(default_factory=dict)
+    router_flops: Dict[int, float] = Field(default_factory=dict)
     # Router/gate weight bytes by layer
-    router_bytes: Dict[int, int] = field(default_factory=dict)
+    router_bytes: Dict[int, int] = Field(default_factory=dict)
     # Per-active-expert per-token FLOPs by layer
-    flops_per_active_expert_per_token: Dict[int, float] = field(default_factory=dict)
+    flops_per_active_expert_per_token: Dict[int, float] = Field(default_factory=dict)
 
 
-@dataclass
-class ModelProfilePhased:
+class ModelProfilePhased(BaseModel):
     prefill: ModelProfileInfo
     decode: ModelProfileInfo
 
 
-@dataclass
-class ModelProfileSplit:
+class ModelProfileSplit(BaseModel):
     b: List[int]
     b_i: List[int]
     b_o: List[int]
@@ -186,17 +181,17 @@ class ModelProfileSplit:
     moe_layer_freq: int = 0
     first_k_dense_replace: int = 0
     total_moe_layers: int = 0
-    moe_layer_indices: List[int] = field(default_factory=list)
+    moe_layer_indices: List[int] = Field(default_factory=list)
 
     # Component metrics for solver assignment
-    attn_bytes: List[int] = field(default_factory=list)
-    attn_flops: Dict[str, Dict[str, List[float]]] = field(
+    attn_bytes: List[int] = Field(default_factory=list)
+    attn_flops: Dict[str, Dict[str, List[float]]] = Field(
         default_factory=dict
     )  # phase -> b_tag -> [FLOPs]
-    bytes_per_expert: Dict[int, int] = field(default_factory=dict)
-    bytes_shared_experts: Dict[int, int] = field(default_factory=dict)
-    flops_per_expert: Dict[int, float] = field(default_factory=dict)
-    flops_shared_experts: Dict[int, float] = field(default_factory=dict)
-    router_flops: Dict[int, float] = field(default_factory=dict)
-    router_bytes: Dict[int, int] = field(default_factory=dict)
-    flops_per_active_expert_per_token: Dict[int, float] = field(default_factory=dict)
+    bytes_per_expert: Dict[int, int] = Field(default_factory=dict)
+    bytes_shared_experts: Dict[int, int] = Field(default_factory=dict)
+    flops_per_expert: Dict[int, float] = Field(default_factory=dict)
+    flops_shared_experts: Dict[int, float] = Field(default_factory=dict)
+    router_flops: Dict[int, float] = Field(default_factory=dict)
+    router_bytes: Dict[int, int] = Field(default_factory=dict)
+    flops_per_active_expert_per_token: Dict[int, float] = Field(default_factory=dict)

@@ -3,13 +3,12 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
 from typing import Dict, Optional
+from pydantic import BaseModel, Field
 
 
 # TODO: this is used by solver
-@dataclass
-class DeviceProfile:
+class DeviceProfile(BaseModel):
     """
     One device dm with measured/profiler data.
     Notation in comments matches the paper's symbols.
@@ -75,8 +74,7 @@ class DeviceProfile:
         print(f"   Disk Speed: {self.s_disk / (1024**2):.1f} MB/s")
 
 
-@dataclass
-class DeviceProfileInfo:
+class DeviceProfileInfo(BaseModel):
     """
     One device dm with measured/profiler data.
     Notation in comments matches the paper's symbols.
@@ -92,7 +90,7 @@ class DeviceProfileInfo:
 
     # Throughput tables (FLOPS) per quantization for CPU/GPU paths
     # TODO: ["f32", "fp16", "bf16"] as the first keys?
-    scpu: Dict[str, Dict[str, float]] = field(default_factory=dict)  # s^{cpu}_{m,q}
+    scpu: Dict[str, Dict[str, float]] = Field(default_factory=dict)  # s^{cpu}_{m,q}
     T_cpu: float = 0.0  # T^{cpu}_m (register loading throughput, bytes/s)
 
     # KV-copy times (sec) for a fixed 2*(h_k e_k + h_v e_v)·n_kv byte payload

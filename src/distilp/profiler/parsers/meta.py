@@ -1,9 +1,8 @@
-from dataclasses import dataclass
 from typing import Any
+from pydantic import BaseModel
 
 
-@dataclass
-class LayerMeta:
+class LayerMeta(BaseModel):
     """Layer-level profiling metadata."""
 
     name: str = ""  # Name of the symbol

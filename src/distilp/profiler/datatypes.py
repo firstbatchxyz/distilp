@@ -1,38 +1,33 @@
-from dataclasses import dataclass, field
+from pydantic import BaseModel, Field
 from typing import Literal
 
 
-@dataclass
-class CPUTopology:
+class CPUTopology(BaseModel):
     packages: int = 1
     cores: int = 0
     threads: int = 0
 
 
-@dataclass
-class CPUClock:
+class CPUClock(BaseModel):
     base: float = 0.0  # MHz
     max: float = 0.0  # MHz
 
 
-@dataclass
-class CPUFeatures:
+class CPUFeatures(BaseModel):
     AVX: bool = False
     FMA: bool = False
     BF16: bool = False
     SSE: bool = False
 
 
-@dataclass
-class CPUCache:
+class CPUCache(BaseModel):
     l1d: int = 0
     l1i: int = 0
     l2: int = 0
     l3: int = 0
 
 
-@dataclass
-class Stat:
+class Stat(BaseModel):
     samples: int = 0
     min: float = 0.0
     p50: float = 0.0
@@ -42,8 +37,7 @@ class Stat:
     stddev: float = 0.0
 
 
-@dataclass
-class Batches:
+class Batches(BaseModel):
     b_1: float = 0.0
     b_2: float = 0.0
     b_4: float = 0.0
@@ -56,23 +50,21 @@ class Batches:
     b_512: float = 0.0
 
 
-@dataclass
-class Benchmarks:
-    f64: Batches = field(default_factory=Batches)
-    f32: Batches = field(default_factory=Batches)
-    tf32: Batches = field(default_factory=Batches)
-    fp16: Batches = field(default_factory=Batches)
-    bf16: Batches = field(default_factory=Batches)
-    u32: Batches = field(default_factory=Batches)
-    u16: Batches = field(default_factory=Batches)
-    u8: Batches = field(default_factory=Batches)
-    i32: Batches = field(default_factory=Batches)
-    i16: Batches = field(default_factory=Batches)
-    i8: Batches = field(default_factory=Batches)
+class Benchmarks(BaseModel):
+    f64: Batches = Field(default_factory=Batches)
+    f32: Batches = Field(default_factory=Batches)
+    tf32: Batches = Field(default_factory=Batches)
+    fp16: Batches = Field(default_factory=Batches)
+    bf16: Batches = Field(default_factory=Batches)
+    u32: Batches = Field(default_factory=Batches)
+    u16: Batches = Field(default_factory=Batches)
+    u8: Batches = Field(default_factory=Batches)
+    i32: Batches = Field(default_factory=Batches)
+    i16: Batches = Field(default_factory=Batches)
+    i8: Batches = Field(default_factory=Batches)
 
 
-@dataclass
-class SystemMemory:
+class SystemMemory(BaseModel):
     can_swap: int = 0
     total: float = 0.0
     available: float = 0.0
@@ -85,29 +77,26 @@ class SystemMemory:
     memcpy_delay: float = 0.0
 
 
-@dataclass
-class DiskInfo:
+class DiskInfo(BaseModel):
     read: float = 0.0
     write: float = 0.0
     random: float = 0.0
 
 
-@dataclass
-class CPUInfo:
+class CPUInfo(BaseModel):
     vendor: str = ""
     model: str = ""
     arch: str = ""
-    topology: CPUTopology = field(default_factory=CPUTopology)
-    clock: CPUClock = field(default_factory=CPUClock)
-    cache: CPUCache = field(default_factory=CPUCache)
-    features: CPUFeatures = field(default_factory=CPUFeatures)
-    benchmarks: Benchmarks = field(default_factory=Benchmarks)
+    topology: CPUTopology = Field(default_factory=CPUTopology)
+    clock: CPUClock = Field(default_factory=CPUClock)
+    cache: CPUCache = Field(default_factory=CPUCache)
+    features: CPUFeatures = Field(default_factory=CPUFeatures)
+    benchmarks: Benchmarks = Field(default_factory=Benchmarks)
     memcpy_hot: float = 0.0
     memcpy_cold: float = 0.0
 
 
-@dataclass
-class GPUMemory:
+class GPUMemory(BaseModel):
     name: str = ""
     free: float = 0
     total: float = 0
@@ -119,18 +108,16 @@ class GPUMemory:
     unified_memory: bool = False
 
 
-@dataclass
-class GPUInfo:
+class GPUInfo(BaseModel):
     name: Literal["cuda", "metal", ""] = ""  # "cuda" | "metal" | "" (none)
-    memory: GPUMemory = field(default_factory=GPUMemory)
-    benchmarks: Benchmarks = field(default_factory=Benchmarks)
+    memory: GPUMemory = Field(default_factory=GPUMemory)
+    benchmarks: Benchmarks = Field(default_factory=Benchmarks)
 
 
-@dataclass
-class DeviceInfo:
-    os: str = ""  # 'linux' | 'windows' | ... | "" (none)
+class DeviceInfo(BaseModel):
     # empty string is also how `platform.system()` indicates unknown OS
-    cpu: CPUInfo = field(default_factory=CPUInfo)
-    gpu: GPUInfo = field(default_factory=GPUInfo)
-    disk: DiskInfo = field(default_factory=DiskInfo)
-    memory: SystemMemory = field(default_factory=SystemMemory)
+    os: str = ""  # 'linux' | 'windows' | ... | "" (none)
+    cpu: CPUInfo = Field(default_factory=CPUInfo)
+    gpu: GPUInfo = Field(default_factory=GPUInfo)
+    disk: DiskInfo = Field(default_factory=DiskInfo)
+    memory: SystemMemory = Field(default_factory=SystemMemory)
