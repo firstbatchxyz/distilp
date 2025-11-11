@@ -1,10 +1,56 @@
 import mlx.nn as nn
-
+from typing import List, Dict, Literal
 from math import ceil
 from fnmatch import fnmatch
 from typing import Any, TypeVar
+from pydantic import BaseModel
 
-from .meta import LayerMeta
+
+from ...common import (
+    ModelProfileInfo,
+    MoEModelProfileInfo,
+    ModelProfileSplit,
+    ModelProfilePhased,
+)
+
+type ModelPhase = Literal["merged", "prefill", "decode"]
+
+
+class LayerMetadata(BaseModel):
+    """Layer-level profiling metadata."""
+
+    name: str = ""  # Name of the symbol
+    submodules: Any = None  # Submodules decomposed into LayerMeta
+    parent_layer: Any = None  # Parent Compount Layer
+    layer: Any = None  # Original object
+    flops: float = 0.0  # Estimated FLOPs to compute
+    weight_bytes: int = 0  # Bytes of internal weight tensor
+    input_bytes: int = 0  # Bytes of input tensor
+    output_bytes: int = 0  # Bytes of output tensor
+    kv_cache_t: int = 0  # Total tokens stored in KV Cache
+    kv_cache_r: int = 0  # Bytes of KV Cache read
+    kv_cache_w: int = 0  # Bytes of KV Cache written
+    ram_vram_rw: int = 0  # Bytes of data transmitted between RAM <-> VRAM
+
+    # Component breakdowns for MoE solver assignment
+    attn_flops: float = 0.0  # Attention-specific FLOPs
+    attn_bytes: int = 0  # Attention weight bytes
+    moe_router_flops: float = 0.0  # MoE router/gate FLOPs
+    moe_router_bytes: int = 0  # MoE router/gate bytes
+    moe_expert_flops: float = 0.0  # Per-expert FLOPs (for routed experts)
+    moe_expert_bytes: int = 0  # Per-expert bytes (for routed experts)
+    moe_expert_flops_per_token: float = 0.0  # FLOPs for a single active expert on one token
+    moe_shared_flops: float = 0.0  # Total shared experts FLOPs
+    moe_shared_bytes: int = 0  # Total shared experts bytes
+    is_moe_layer: bool = False  # Whether this layer uses MoE
+
+    def __repr__(self):
+        return (
+            f"<LayerMeta {self.name}: "
+            f"FLOPs={self.flops}, INPUT={self.input_bytes}, OUTPUT={self.output_bytes}, "
+            f"WEIGHT={self.weight_bytes}, parent={self.parent_layer.__class__.__name__}"
+        )
+
 
 """ Estimate the FLOP count of all 'mlx_lm' models at a decoder level
     NOTE: Small OPs like RoPE and norms default to 0 FLOPs
@@ -34,7 +80,7 @@ def in_profile_model(
     w_bits=16,
     group_size=32,
     debug=0,
-    phase: str = "merged",  # 'prefill' | 'decode' | 'merged'
+    phase: ModelPhase = "merged",  # 'prefill' | 'decode' | 'merged'
     cfg: dict = {},
     exclude_patterns: list = [],
     fp_bits: int = 16,
@@ -43,7 +89,7 @@ def in_profile_model(
         raise RuntimeError("Unable to profile a model without a '.layers' attribute.")
 
     decoder_idx = 1
-    layers: list[LayerMeta] = []
+    layers: list[LayerMetadata] = []
 
     # Quantization hard-coded scale and zero bytes
     scale_bytes = 2
@@ -52,9 +98,20 @@ def in_profile_model(
     T = TypeVar("T")  # allow `cfg_get` to have a generic return type
 
     def cfg_get(key: str, default: T | None = None) -> T:
+        """Helper to get config values from cfg dict or config object."""
+        nonlocal cfg, config
+
         if key in cfg and cfg[key] is not None:
             return cfg[key]
         return getattr(config, key, default)  # type: ignore
+
+    def cfg_mget(keys: list[str], default: T | None = None) -> T:
+        """Like cfg_get but tries multiple keys in given order."""
+        for key in keys:
+            val = cfg_get(key)
+            if val is not None:
+                return val
+        return default  # type: ignore
 
     def is_excluded(path: str) -> bool:
         nonlocal exclude_patterns
@@ -67,12 +124,8 @@ def in_profile_model(
         return False
 
     # Append a symbolic prefill layer to account for these FLOPs
-    prefill = LayerMeta()
+    prefill = LayerMetadata()
     prefill.name = "prefill"
-    prefill.layer = None
-    prefill.flops = 0
-    prefill.kv_cache_r = 0
-    prefill.kv_cache_w = 0
     layers.append(prefill)
 
     if debug >= 1:
@@ -86,12 +139,10 @@ def in_profile_model(
         )
 
     for lyr in m.layers:  # type: ignore # FIXME: !!!
-        lm = LayerMeta()
+        lm = LayerMetadata()
         lm.layer = lyr
         lm.name = f"decoder_{decoder_idx}"
-        if any(
-            x in lyr.__class__.__name__ for x in ["TransformerBlock", "DecoderLayer"]
-        ):
+        if any(x in lyr.__class__.__name__ for x in ["TransformerBlock", "DecoderLayer"]):
             lm.input_bytes = (B * L * config.hidden_size * a_bits) / 8
             lm.output_bytes = (B * L * config.hidden_size * a_bits) / 8
             # Tokens processed per phase
@@ -113,28 +164,30 @@ def in_profile_model(
                 elif name in ("mlp", "ffn", "feed_forward", "feedforward", "ffn_layer"):
                     # MoE - check for various naming conventions (use cfg_get)
                     mlp_path = f"model.layers.{decoder_idx}.mlp"
-                    n_experts = cfg_get(
-                        "n_routed_experts",
-                        cfg_get(
+                    n_experts: int = cfg_mget(
+                        [
+                            "n_routed_experts",
                             "num_experts",
-                            cfg_get("num_local_experts", cfg_get("n_experts", None)),
-                        ),
+                            "num_local_experts",
+                            "n_experts",
+                        ],
+                        0,
                     )
 
-                    first_dense = cfg_get(
-                        "first_k_dense_replace", cfg_get("num_dense_layers", 0)
+                    first_dense: int = cfg_mget(
+                        [
+                            "first_k_dense_replace",
+                            "num_dense_layers",
+                        ],
+                        0,
                     )
 
-                    layer_freq = cfg_get(
-                        "moe_layer_freq",
-                        cfg_get("decoder_sparse_step", cfg_get("expert_interval", 1)),
-                    )
+                    layer_freq = cfg_mget(["moe_layer_freq", "decoder_sparse_step", "expert_interval"], 1)
 
                     mlp_only_layers = set(cfg_get("mlp_only_layers", []))
 
                     if (
-                        n_experts is not None
-                        and n_experts > 0
+                        n_experts != 0
                         and decoder_idx > first_dense
                         and decoder_idx % layer_freq == 0
                         and decoder_idx not in mlp_only_layers
@@ -143,11 +196,15 @@ def in_profile_model(
                         has_router_gate = False
                         found_switch_block = False
                         # Accumulators
-                        gate_f, smlp_f, smlp_b, se_f, se_b = 0, 0, 0, 0, 0
+                        gate_f = 0
+                        smlp_f = 0
+                        smlp_b = 0
+                        se_f = 0
+                        se_b = 0
                         # Initialize variables that may be used in debug statements
-                        moe_intermediate = None
-                        shared_intermediate = None
-                        num_experts_tok = None
+                        # moe_intermediate = 0
+                        # shared_intermediate = None
+                        # num_experts_tok = None
                         num_proj_smlp = 0
                         num_proj_se = 0
                         # Fallback detection flags for routed/shared experts
@@ -172,9 +229,7 @@ def in_profile_model(
                                 # Router weight bytes (apply per-module exclusion)
                                 router_params = config.hidden_size * n_experts
                                 router_path = f"model.layers.{decoder_idx}.mlp.router"
-                                local_w_bits = (
-                                    fp_bits if is_excluded(router_path) else w_bits
-                                )
+                                local_w_bits = fp_bits if is_excluded(router_path) else w_bits
                                 if local_w_bits < 16 and group_size is not None:
                                     lm.moe_router_bytes = __quantized_bytes(
                                         router_params,
@@ -184,30 +239,29 @@ def in_profile_model(
                                         zero_bytes,
                                     )
                                 else:
-                                    lm.moe_router_bytes = ceil(
-                                        (router_params * local_w_bits) / 8
-                                    )
+                                    lm.moe_router_bytes = ceil((router_params * local_w_bits) / 8)
                                 has_router_gate = True
 
                             elif key == "switch_mlp":
-                                moe_intermediate = cfg_get(
-                                    "moe_intermediate_size",
-                                    cfg_get(
+                                moe_intermediate = cfg_mget(
+                                    [
+                                        "moe_intermediate_size",
                                         "expert_intermediate_size",
-                                        cfg_get("intermediate_size", 0),
-                                    ),
+                                        "intermediate_size",
+                                    ],
+                                    0,
                                 )
                                 if moe_intermediate == 0:
                                     raise ValueError(
                                         "MoE layer detected but no valid intermediate size found in config"
                                     )
                                 DS = config.hidden_size * moe_intermediate
-                                num_experts_tok = cfg_get(
-                                    "num_experts_per_tok",
-                                    cfg_get(
+                                num_experts_tok = cfg_mget(
+                                    [
+                                        "num_experts_per_tok",
                                         "num_experts_per_token",
-                                        cfg_get("experts_per_token", None),
-                                    ),
+                                        "experts_per_token",
+                                    ],
                                 )
                                 if num_experts_tok is None:
                                     raise ValueError(
@@ -222,18 +276,12 @@ def in_profile_model(
                                         smlp_f += 2 * tokens * num_experts_tok * DS
                                     elif key2 == "activations":
                                         # Activation FLOPs are small; include linear in L for completeness
-                                        smlp_f += (
-                                            tokens * num_experts_tok * moe_intermediate
-                                        )
+                                        smlp_f += tokens * num_experts_tok * moe_intermediate
 
                                 # Per-active-expert-per-token FLOPs (one token through one expert MLP)
                                 # 2 * num_proj * H * D + activation_cost (approx D)
                                 lm.moe_expert_flops_per_token = (
-                                    2
-                                    * num_proj_smlp
-                                    * config.hidden_size
-                                    * moe_intermediate
-                                    + moe_intermediate
+                                    2 * num_proj_smlp * config.hidden_size * moe_intermediate + moe_intermediate
                                 )
                                 found_switch_block = True
 
@@ -244,9 +292,7 @@ def in_profile_model(
                                 if is_excluded(mlp_path):
                                     local_w_bits = fp_bits
                                 if local_w_bits < 16 and group_size is not None:
-                                    per_proj_params = (
-                                        config.hidden_size * moe_intermediate
-                                    )
+                                    per_proj_params = config.hidden_size * moe_intermediate
                                     per_proj_bytes = __quantized_bytes(
                                         per_proj_params,
                                         local_w_bits,
@@ -269,45 +315,31 @@ def in_profile_model(
                                 lm.weight_bytes += smlp_b
                                 lm.flops += smlp_f
                                 # Per-expert metrics
-                                lm.moe_expert_flops = (
-                                    smlp_f / n_experts if n_experts > 0 else 0
-                                )
-                                lm.moe_expert_bytes = (
-                                    smlp_b // n_experts if n_experts > 0 else 0
-                                )
+                                lm.moe_expert_flops = smlp_f / n_experts if n_experts > 0 else 0
+                                lm.moe_expert_bytes = smlp_b // n_experts if n_experts > 0 else 0
 
                             elif key == "shared_experts":
-                                n_shared = cfg_get(
-                                    "n_shared_experts", cfg_get("num_shared_experts", 0)
-                                )
+                                n_shared = cfg_mget(["n_shared_experts", "num_shared_experts"], 0)
                                 # FIXME: or float?
-                                shared_intermediate: int | None = cfg_get(
-                                    "shared_expert_intermediate_size",
-                                    cfg_get(
+                                shared_intermediate = cfg_mget(
+                                    [
+                                        "shared_expert_intermediate_size",
                                         "moe_intermediate_size",
-                                        cfg_get("intermediate_size", None),
-                                    ),
+                                        "intermediate_size",
+                                    ]
                                 )
                                 num_proj_se = 2
                                 for key2, proj in leaf.named_modules():
                                     if key2 == "gate_proj":
                                         num_proj_se = 3
                                     if key2 in ["gate_proj", "up_proj", "down_proj"]:
-                                        se_f += (
-                                            2
-                                            * tokens
-                                            * config.hidden_size
-                                            * n_shared
-                                            * shared_intermediate
-                                        )
+                                        se_f += 2 * tokens * config.hidden_size * n_shared * shared_intermediate
 
                                 local_w_bits = w_bits
                                 if is_excluded(mlp_path):
                                     local_w_bits = fp_bits
                                 if local_w_bits < 16 and group_size is not None:
-                                    per_proj_params = (
-                                        config.hidden_size * shared_intermediate
-                                    )
+                                    per_proj_params = config.hidden_size * shared_intermediate
                                     per_proj_bytes = __quantized_bytes(
                                         per_proj_params,
                                         local_w_bits,
@@ -318,11 +350,7 @@ def in_profile_model(
                                     se_b = n_shared * num_proj_se * per_proj_bytes
                                 else:
                                     se_b = (
-                                        n_shared
-                                        * num_proj_se
-                                        * config.hidden_size
-                                        * shared_intermediate
-                                        * local_w_bits
+                                        n_shared * num_proj_se * config.hidden_size * shared_intermediate * local_w_bits
                                     ) / 8
                                 lm.weight_bytes += se_b
                                 lm.flops += se_f
@@ -331,9 +359,7 @@ def in_profile_model(
                                 lm.moe_shared_bytes = se_b
                             # Fallback pattern detection for routed experts
                             if (
-                                "experts" in key_l
-                                or "local_experts" in key_l
-                                or "routed_experts" in key_l
+                                "experts" in key_l or "local_experts" in key_l or "routed_experts" in key_l
                             ) and not key_l.startswith("shared"):
                                 if key_l.endswith("up_proj") or ".up_proj" in key_l:
                                     found_expert_up = True
@@ -342,9 +368,7 @@ def in_profile_model(
                                 if key_l.endswith("gate_proj") or ".gate_proj" in key_l:
                                     found_expert_gatep = True
                             # Fallback pattern detection for shared experts
-                            if "shared" in key_l and (
-                                "experts" in key_l or "expert" in key_l
-                            ):
+                            if "shared" in key_l and ("experts" in key_l or "expert" in key_l):
                                 if key_l.endswith("up_proj") or ".up_proj" in key_l:
                                     found_shared_up = True
                                 if key_l.endswith("down_proj") or ".down_proj" in key_l:
@@ -353,37 +377,32 @@ def in_profile_model(
                                     found_shared_gatep = True
 
                         # End of traversal: if no switch_mlp block but expert projections detected, compute generically
-                        if not found_switch_block and (
-                            found_expert_up or found_expert_down or found_expert_gatep
-                        ):
-                            moe_intermediate = cfg_get(
-                                "moe_intermediate_size",
-                                cfg_get(
+                        if not found_switch_block and (found_expert_up or found_expert_down or found_expert_gatep):
+                            moe_intermediate = cfg_mget(
+                                [
+                                    "moe_intermediate_size",
                                     "expert_intermediate_size",
-                                    cfg_get("intermediate_size", 0),
-                                ),
+                                    "intermediate_size",
+                                ],
+                                0,
                             )
+
                             if moe_intermediate == 0:
-                                raise ValueError(
-                                    "MoE layer detected but no valid intermediate size found in config"
-                                )
+                                raise ValueError("MoE layer detected but no valid intermediate size found in config")
                             DS = config.hidden_size * moe_intermediate
-                            num_experts_tok: int | None = cfg_get(
-                                "num_experts_per_tok",
-                                cfg_get(
+                            num_experts_tok = cfg_mget(
+                                [
+                                    "num_experts_per_tok",
                                     "num_experts_per_token",
-                                    cfg_get("experts_per_token", None),
-                                ),
+                                    "experts_per_token",
+                                ]
                             )
+
                             if num_experts_tok is None:
                                 raise ValueError(
                                     "MoE layer detected but num_experts_per_tok/experts_per_token not found in config"
                                 )
-                            num_proj_smlp = (
-                                int(found_expert_up)
-                                + int(found_expert_down)
-                                + int(found_expert_gatep)
-                            )
+                            num_proj_smlp = int(found_expert_up) + int(found_expert_down) + int(found_expert_gatep)
                             # FLOPs for active experts
                             smlp_f = num_proj_smlp * (2 * tokens * num_experts_tok * DS)
                             # Activation cost (approximate)
@@ -404,58 +423,34 @@ def in_profile_model(
                                 smlp_b = n_experts * num_proj_smlp * per_proj_bytes
                             else:
                                 smlp_b = ceil(
-                                    (
-                                        n_experts
-                                        * num_proj_smlp
-                                        * config.hidden_size
-                                        * moe_intermediate
-                                        * local_w_bits
-                                    )
+                                    (n_experts * num_proj_smlp * config.hidden_size * moe_intermediate * local_w_bits)
                                     / 8
                                 )
                             lm.weight_bytes += smlp_b
                             lm.flops += smlp_f
-                            lm.moe_expert_flops = (
-                                smlp_f / n_experts if n_experts > 0 else 0
-                            )
-                            lm.moe_expert_bytes = (
-                                smlp_b // n_experts if n_experts > 0 else 0
-                            )
+                            lm.moe_expert_flops = smlp_f / n_experts if n_experts > 0 else 0
+                            lm.moe_expert_bytes = smlp_b // n_experts if n_experts > 0 else 0
                             lm.moe_expert_flops_per_token = (
-                                2
-                                * num_proj_smlp
-                                * config.hidden_size
-                                * moe_intermediate
-                                + moe_intermediate
+                                2 * num_proj_smlp * config.hidden_size * moe_intermediate + moe_intermediate
                             )
 
                         # Shared experts fallback: if not computed but detected
-                        if se_b == 0 and (
-                            found_shared_up or found_shared_down or found_shared_gatep
-                        ):
-                            n_shared = cfg_get(
-                                "n_shared_experts", cfg_get("num_shared_experts", 0)
-                            )
-                            shared_intermediate = cfg_get(
-                                "shared_expert_intermediate_size",
-                                cfg_get(
+                        if se_b == 0 and (found_shared_up or found_shared_down or found_shared_gatep):
+                            n_shared: int = cfg_mget(["n_shared_experts", "num_shared_experts"], 0)
+                            shared_intermediate: int = cfg_mget(
+                                [
+                                    "shared_expert_intermediate_size",
                                     "moe_intermediate_size",
-                                    cfg_get("intermediate_size", None),
-                                ),
+                                    "intermediate_size",
+                                ],
                             )
                             if shared_intermediate:
-                                num_proj_se = (
-                                    int(found_shared_up)
-                                    + int(found_shared_down)
-                                    + int(found_shared_gatep)
-                                )
+                                num_proj_se = int(found_shared_up) + int(found_shared_down) + int(found_shared_gatep)
                                 local_w_bits = w_bits
                                 if is_excluded(mlp_path):
                                     local_w_bits = fp_bits
                                 if local_w_bits < 16 and group_size is not None:
-                                    per_proj_params = (
-                                        config.hidden_size * shared_intermediate
-                                    )
+                                    per_proj_params = config.hidden_size * shared_intermediate
                                     per_proj_bytes = __quantized_bytes(
                                         per_proj_params,
                                         local_w_bits,
@@ -466,54 +461,40 @@ def in_profile_model(
                                     se_b = n_shared * num_proj_se * per_proj_bytes
                                 else:
                                     se_b = (
-                                        n_shared
-                                        * num_proj_se
-                                        * config.hidden_size
-                                        * shared_intermediate
-                                        * local_w_bits
+                                        n_shared * num_proj_se * config.hidden_size * shared_intermediate * local_w_bits
                                     ) / 8
                                 lm.weight_bytes += se_b
-                                se_f = (
-                                    2
-                                    * tokens
-                                    * config.hidden_size
-                                    * n_shared
-                                    * shared_intermediate
-                                    * num_proj_se
-                                )
+                                se_f = 2 * tokens * config.hidden_size * n_shared * shared_intermediate * num_proj_se
                                 lm.flops += se_f
                                 lm.moe_shared_flops = se_f
                                 lm.moe_shared_bytes = se_b
 
                         # Final generic fallback for routed experts if still zero
                         if smlp_b == 0 and (n_experts is not None and n_experts > 0):
-                            moe_intermediate = cfg_get(
-                                "moe_intermediate_size",
-                                cfg_get(
+                            moe_intermediate: int = cfg_mget(
+                                [
+                                    "moe_intermediate_size",
                                     "expert_intermediate_size",
-                                    cfg_get("intermediate_size", None),
-                                ),
+                                    "intermediate_size",
+                                ],
                             )
-                            num_experts_tok = cfg_get(
-                                "num_experts_per_tok",
-                                cfg_get(
+
+                            num_experts_tok: int = cfg_mget(
+                                [
+                                    "num_experts_per_tok",
                                     "num_experts_per_token",
-                                    cfg_get("experts_per_token", None),
-                                ),
+                                    "experts_per_token",
+                                ],
                             )
                             if moe_intermediate and num_experts_tok:
                                 num_proj_smlp = 3
                                 DS = config.hidden_size * moe_intermediate
-                                smlp_f = num_proj_smlp * (
-                                    2 * tokens * num_experts_tok * DS
-                                ) + (tokens * num_experts_tok * moe_intermediate)
-                                local_w_bits = (
-                                    fp_bits if is_excluded(mlp_path) else w_bits
+                                smlp_f = num_proj_smlp * (2 * tokens * num_experts_tok * DS) + (
+                                    tokens * num_experts_tok * moe_intermediate
                                 )
+                                local_w_bits = fp_bits if is_excluded(mlp_path) else w_bits
                                 if local_w_bits < 16 and group_size is not None:
-                                    per_proj_params = (
-                                        config.hidden_size * moe_intermediate
-                                    )
+                                    per_proj_params = config.hidden_size * moe_intermediate
                                     per_proj_bytes = __quantized_bytes(
                                         per_proj_params,
                                         local_w_bits,
@@ -535,32 +516,20 @@ def in_profile_model(
                                     )
                                 lm.weight_bytes += smlp_b
                                 lm.flops += smlp_f
-                                lm.moe_expert_flops = (
-                                    smlp_f / n_experts if n_experts > 0 else 0
-                                )
-                                lm.moe_expert_bytes = (
-                                    smlp_b // n_experts if n_experts > 0 else 0
-                                )
+                                lm.moe_expert_flops = smlp_f / n_experts if n_experts > 0 else 0
+                                lm.moe_expert_bytes = smlp_b // n_experts if n_experts > 0 else 0
                                 lm.moe_expert_flops_per_token = (
-                                    2
-                                    * num_proj_smlp
-                                    * config.hidden_size
-                                    * moe_intermediate
-                                    + moe_intermediate
+                                    2 * num_proj_smlp * config.hidden_size * moe_intermediate + moe_intermediate
                                 )
 
                         # If router not found as submodule, estimate generically (common for MoE blocks)
-                        if not has_router_gate and (
-                            n_experts is not None and n_experts > 0
-                        ):
+                        if not has_router_gate and (n_experts is not None and n_experts > 0):
                             gate_f = 2 * tokens * config.hidden_size * n_experts
                             lm.flops += gate_f
                             lm.moe_router_flops = gate_f
                             router_params = config.hidden_size * n_experts
                             router_path = f"model.layers.{decoder_idx}.mlp.router"
-                            local_w_bits = (
-                                fp_bits if is_excluded(router_path) else w_bits
-                            )
+                            local_w_bits = fp_bits if is_excluded(router_path) else w_bits
                             if local_w_bits < 16 and group_size is not None:
                                 lm.moe_router_bytes = __quantized_bytes(
                                     router_params,
@@ -570,9 +539,7 @@ def in_profile_model(
                                     zero_bytes,
                                 )
                             else:
-                                lm.moe_router_bytes = ceil(
-                                    (router_params * local_w_bits) / 8
-                                )
+                                lm.moe_router_bytes = ceil((router_params * local_w_bits) / 8)
 
                         if debug >= 1:
                             print(
@@ -585,8 +552,7 @@ def in_profile_model(
                                 end="",
                             )
                             print(
-                                f" routed_experts={n_experts} "
-                                f"with top-k={num_experts_tok}, ",
+                                f" routed_experts={n_experts} with top-k={num_experts_tok}, ",
                                 end="",
                             )
                             print(f" shared_experts={n_shared}")
@@ -600,17 +566,10 @@ def in_profile_model(
                             if key == "gate_proj":
                                 num_proj = 3
                             if key in ["gate_proj", "up_proj", "down_proj"]:
-                                lm.flops += (
-                                    2
-                                    * tokens
-                                    * config.hidden_size
-                                    * config.intermediate_size
-                                )
+                                lm.flops += 2 * tokens * config.hidden_size * config.intermediate_size
                                 n = config.hidden_size * config.intermediate_size
                                 if w_bits < 16 and group_size is not None:
-                                    proj_bytes += __quantized_bytes(
-                                        n, w_bits, group_size, scale_bytes, zero_bytes
-                                    )
+                                    proj_bytes += __quantized_bytes(n, w_bits, group_size, scale_bytes, zero_bytes)
                                 else:
                                     proj_bytes += ceil((n * w_bits) / 8)
                         lm.weight_bytes += proj_bytes
@@ -625,13 +584,8 @@ def in_profile_model(
 
                 # NOTE: We only compute projection bits then correct in the case of quantization
                 elif name in ("self_attn", "attn", "self_attention"):
-                    # attn_layer_flops = 0
-                    # attn_layer_bytes = 0
-
-                    is_gqa = False
-                    is_mla = False
-
                     # Grouped Query Attention
+                    is_gqa = False
                     if (
                         hasattr(config, "num_key_value_heads")
                         and config.num_key_value_heads != config.num_attention_heads
@@ -639,53 +593,29 @@ def in_profile_model(
                         is_gqa = True
 
                     # Low rank / Multi-head Latent Attention
-                    if all(
-                        hasattr(config, k)
-                        for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]
-                    ) and all(
-                        getattr(config, k) is not None
-                        for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]
+                    is_mla = False
+                    if all(hasattr(config, k) for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]) and all(
+                        getattr(config, k) is not None for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]
                     ):
                         is_mla = True
 
                     if is_mla:
                         # Deepseek_v2,v3, Kimi_v1 and minicpm
-                        if any(
-                            hasattr(config, k) for k in ["kv_lora_rank", "v_head_dim"]
-                        ):
+                        if any(hasattr(config, k) for k in ["kv_lora_rank", "v_head_dim"]):
                             # Q projections, flops and bytes
-                            q_head_dim = (
-                                config.qk_nope_head_dim + config.qk_rope_head_dim
-                            )
-                            q_a_proj = (
-                                2 * tokens * config.hidden_size * config.q_lora_rank
-                            )
-                            q_b_proj = (
-                                2
-                                * tokens
-                                * config.num_attention_heads
-                                * q_head_dim
-                                * config.q_lora_rank
-                            )
+                            q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
+                            q_a_proj = 2 * tokens * config.hidden_size * config.q_lora_rank
+                            q_b_proj = 2 * tokens * config.num_attention_heads * q_head_dim * config.q_lora_rank
                             q_a_proj_n = config.q_lora_rank * config.hidden_size
-                            q_b_proj_n = (
-                                config.num_attention_heads
-                                * q_head_dim
-                                * config.q_lora_rank
-                            )
+                            q_b_proj_n = config.num_attention_heads * q_head_dim * config.q_lora_rank
 
                             # KV projections
                             if is_gqa:
                                 pass  # TODO
                             else:
-                                out_features = (
-                                    config.kv_lora_rank + config.qk_rope_head_dim
-                                )
+                                out_features = config.kv_lora_rank + config.qk_rope_head_dim
                                 kv_a_proj_with_mqa = (
-                                    2
-                                    * tokens
-                                    * (config.kv_lora_rank + config.qk_rope_head_dim)
-                                    * config.hidden_size
+                                    2 * tokens * (config.kv_lora_rank + config.qk_rope_head_dim) * config.hidden_size
                                 )
                                 kv_b_proj = (
                                     2
@@ -698,18 +628,8 @@ def in_profile_model(
                                 kv_b_proj_n = out_features * config.kv_lora_rank
 
                             # O projection
-                            o_proj = (
-                                2
-                                * tokens
-                                * config.num_attention_heads
-                                * config.v_head_dim
-                                * config.hidden_size
-                            )
-                            o_proj_n = (
-                                config.hidden_size
-                                * config.num_attention_heads
-                                * config.v_head_dim
-                            )
+                            o_proj = 2 * tokens * config.num_attention_heads * config.v_head_dim * config.hidden_size
+                            o_proj_n = config.hidden_size * config.num_attention_heads * config.v_head_dim
 
                             # KV Cache I/O
                             kv_elems = config.kv_lora_rank + config.qk_rope_head_dim
@@ -725,16 +645,8 @@ def in_profile_model(
 
                             # Totals
                             # Attention compute FLOPs per phase
-                            attn_prefill = (
-                                4
-                                * B
-                                * (config.num_attention_heads)
-                                * (L * L)
-                                * q_head_dim
-                            )
-                            attn_decode = (
-                                4 * B * (config.num_attention_heads) * L * q_head_dim
-                            )
+                            attn_prefill = 4 * B * (config.num_attention_heads) * (L * L) * q_head_dim
+                            attn_decode = 4 * B * (config.num_attention_heads) * L * q_head_dim
                             attn = (
                                 attn_prefill
                                 if phase == "prefill"
@@ -742,14 +654,7 @@ def in_profile_model(
                                 if phase == "decode"
                                 else attn_prefill + attn_decode
                             )
-                            attn_layer_flops = (
-                                q_a_proj
-                                + q_b_proj
-                                + kv_a_proj_with_mqa
-                                + kv_b_proj
-                                + o_proj
-                                + attn
-                            )
+                            attn_layer_flops = q_a_proj + q_b_proj + kv_a_proj_with_mqa + kv_b_proj + o_proj + attn
                             lm.flops += attn_layer_flops
                             lm.attn_flops = attn_layer_flops
 
@@ -792,11 +697,7 @@ def in_profile_model(
                                     zero_bytes,
                                 )
                                 attn_bytes = (
-                                    q_a_proj_bytes
-                                    + q_b_proj_bytes
-                                    + kv_a_proj_bytes
-                                    + kv_b_proj_bytes
-                                    + o_proj_bytes
+                                    q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
                                 )
                             else:
                                 q_a_proj_bytes = ceil((q_a_proj_n * local_w_bits) / 8)
@@ -805,11 +706,7 @@ def in_profile_model(
                                 kv_b_proj_bytes = ceil((kv_b_proj_n * local_w_bits) / 8)
                                 o_proj_bytes = ceil((o_proj_n * local_w_bits) / 8)
                                 attn_bytes = (
-                                    q_a_proj_bytes
-                                    + q_b_proj_bytes
-                                    + kv_a_proj_bytes
-                                    + kv_b_proj_bytes
-                                    + o_proj_bytes
+                                    q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
                                 )
 
                             # attn_layer_bytes = attn_bytes
@@ -925,23 +822,13 @@ def in_profile_model(
                                 scale_bytes,
                                 zero_bytes,
                             )
-                            attn_bytes = (
-                                q_proj_bytes
-                                + k_proj_bytes
-                                + v_proj_bytes
-                                + o_proj_bytes
-                            )
+                            attn_bytes = q_proj_bytes + k_proj_bytes + v_proj_bytes + o_proj_bytes
                         else:
                             q_proj_bytes = ceil((q_proj_n * local_w_bits) / 8)
                             k_proj_bytes = ceil((k_proj_n * local_w_bits) / 8)
                             v_proj_bytes = ceil((v_proj_n * local_w_bits) / 8)
                             o_proj_bytes = ceil((o_proj_n * local_w_bits) / 8)
-                            attn_bytes = (
-                                q_proj_bytes
-                                + k_proj_bytes
-                                + v_proj_bytes
-                                + o_proj_bytes
-                            )
+                            attn_bytes = q_proj_bytes + k_proj_bytes + v_proj_bytes + o_proj_bytes
 
                         lm.weight_bytes += attn_bytes
                         lm.attn_bytes = attn_bytes
@@ -997,9 +884,7 @@ def in_profile_model(
                         attn_path = f"model.layers.{decoder_idx}.{name}"
                         local_w_bits = fp_bits if is_excluded(attn_path) else w_bits
                         if local_w_bits < 16 and group_size is not None:
-                            attn_bytes = __quantized_bytes(
-                                n, local_w_bits, group_size, scale_bytes, zero_bytes
-                            )
+                            attn_bytes = __quantized_bytes(n, local_w_bits, group_size, scale_bytes, zero_bytes)
                         else:
                             attn_bytes = ceil((n * local_w_bits) / 8)
 
@@ -1017,3 +902,664 @@ def in_profile_model(
             decoder_idx += 1
         layers.append(lm)
     return layers
+
+
+# Estimate FLOPs for Model
+def profile_model(
+    model: nn.Module,
+    config,
+    B: int = 1,
+    L: int = 4096,
+    config_dict: Dict = {},
+    debug=0,
+    bs_list: List[int] = [],
+    phase: ModelPhase = "merged",
+):
+    dtype = None
+    bits = 0
+    group_size = 0
+
+    # Prefer explicit quantization section for bit-width
+    quant_method = None
+    if isinstance(config_dict.get("quantization"), dict):
+        q = config_dict["quantization"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+    elif isinstance(config_dict.get("quantization_config"), dict):
+        q = config_dict["quantization_config"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+        quant_method = q.get("quant_method")
+    # Fallback to dtype when no explicit quantization
+    if bits == 0:
+        # Try config_dict first, then the config object, then default to f16
+        dtype = (
+            config_dict.get("torch_dtype")
+            or config_dict.get("dtype")
+            or getattr(config, "torch_dtype", None)
+            or getattr(config, "dtype", None)
+        )
+        # Map quant_method if present (e.g., mxfp4)
+        if not dtype and isinstance(config_dict.get("quantization_config"), dict):
+            quant_method = config_dict["quantization_config"].get("quant_method") or quant_method
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            bits = 4
+            # Default a group size if none provided
+            if group_size == 0:
+                group_size = 128
+        if dtype:
+            if dtype in ("bfloat16", "bf16"):
+                bits = 16
+            elif dtype in ("float16", "fp16"):
+                bits = 16
+            elif dtype in ("float32", "f32"):
+                # Default to fp16 when quantization is not explicit
+                bits = 16
+        if bits == 0:
+            # Default to fp16 if nothing explicit is set
+            bits = 16
+    # Determine fp_bits for exclusions (non-quantized modules)
+    has_quant_cfg = isinstance(config_dict.get("quantization"), dict) or isinstance(
+        config_dict.get("quantization_config"), dict
+    )
+    fp_bits = 16
+    if has_quant_cfg:
+        d_dtype = (
+            config_dict.get("torch_dtype")
+            or config_dict.get("dtype")
+            or getattr(config, "torch_dtype", None)
+            or getattr(config, "dtype", None)
+        )
+        if d_dtype in ("float32", "f32"):
+            fp_bits = 32
+        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16") or d_dtype is None:
+            fp_bits = 16
+
+    # Quantization exclusions
+    exclude_patterns = []
+    if isinstance(config_dict.get("quantization_config"), dict):
+        exclude_patterns = config_dict["quantization_config"].get("modules_to_not_convert", []) or []
+
+    model_info = in_profile_model(
+        model,
+        config,
+        B,
+        L,
+        16,
+        bits,
+        group_size,
+        debug,
+        phase,
+        config_dict,
+        exclude_patterns,
+        fp_bits,
+    )
+    ret = ModelProfileInfo()
+
+    # Per-layer metrics (base batch)
+    ret.b = [int(x.weight_bytes) for x in model_info]
+    ret.b_i = [int(x.input_bytes) for x in model_info]
+    ret.b_o = [int(x.output_bytes) for x in model_info]
+    ret.f_q[f"b_{B}"] = [float(x.flops) for x in model_info]
+    ret.f_out[f"b_{B}"] = ret.f_q[f"b_{B}"][-1] if ret.f_q[f"b_{B}"] else 0.0
+    ret.seq_len = int(L)
+
+    # Use config_dict if available for more complete access, otherwise fall back to config object
+    cfg = config_dict if config_dict else {}
+
+    # Model-level metrics from config
+    ret.L = cfg.get("num_hidden_layers", getattr(config, "num_hidden_layers", len(model_info) - 1))
+    ret.e_embed = cfg.get("hidden_size", getattr(config, "hidden_size", 0))
+    ret.V = cfg.get("vocab_size", getattr(config, "vocab_size", 0))
+
+    # Attention head configuration
+    num_attention_heads = cfg.get("num_attention_heads", getattr(config, "num_attention_heads", 0))
+    ret.hk = cfg.get(
+        "num_key_value_heads",
+        getattr(config, "num_key_value_heads", num_attention_heads),
+    )
+    ret.hv = cfg.get(
+        "num_key_value_heads",
+        getattr(config, "num_key_value_heads", num_attention_heads),
+    )
+
+    # Calculate head dimension
+    head_dim = cfg.get("head_dim", getattr(config, "head_dim", 0))
+    if head_dim is None and ret.e_embed > 0 and num_attention_heads > 0:
+        head_dim = ret.e_embed // num_attention_heads
+    ret.ek = head_dim
+    ret.ev = head_dim
+
+    # KV cache tokens (using max position embeddings as proxy)
+    ret.n_kv = cfg.get("max_position_embeddings", getattr(config, "max_position_embeddings", L))
+
+    # Add quantization label
+    # If no explicit quantization, default label to F16
+    q_label = ""
+    if isinstance(cfg.get("quantization"), dict) or isinstance(cfg.get("quantization_config"), dict):
+        qbits = None
+        if isinstance(cfg.get("quantization"), dict):
+            qbits = cfg["quantization"].get("bits")
+        else:
+            qbits = cfg["quantization_config"].get("bits")
+            quant_method = cfg["quantization_config"].get("quant_method")
+        try:
+            qbits = int(qbits) if qbits is not None else None
+        except Exception:
+            qbits = None
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            q_label = "MXFP4"
+        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
+        if qbits in mapping:
+            q_label = mapping[qbits]
+        if not q_label:
+            d = cfg.get("torch_dtype") or cfg.get("dtype")
+            if d in ("bfloat16", "bf16"):
+                q_label = "BF16"
+            elif d in ("float16", "fp16"):
+                q_label = "F16"
+            elif d in ("float32", "f32"):
+                q_label = "F32"
+    else:
+        q_label = "F16"
+    ret.quantization = q_label
+
+    # Multi-batch-size profiles: only if provided via --batches
+    for Bx in bs_list:
+        tag = f"b_{Bx}"
+        layers_bx = in_profile_model(
+            model,
+            config,
+            Bx,
+            L,
+            16,
+            bits,
+            group_size,
+            0,
+            phase,
+            config_dict,
+            exclude_patterns,
+            fp_bits,
+        )
+        ret.f_q[tag] = [float(x.flops) for x in layers_bx]
+        ret.f_out[tag] = ret.f_q[tag][-1] if ret.f_q[tag] else 0.0
+
+    return ret
+
+
+def profile_moe_model(
+    model: nn.Module,
+    config,
+    B: int = 1,
+    L: int = 4096,
+    config_dict: Dict = {},
+    debug=0,
+    bs_list: List[int] = [],
+    phase: ModelPhase = "merged",
+):
+    """
+    Profile an MoE model with component-level metrics for solver assignment.
+    Returns MoEModelProfileInfo if MoE is detected, otherwise returns ModelProfileInfo.
+    """
+    dtype = None
+    bits = 0
+    group_size = 0
+
+    # Check if this is an MoE model - handle various naming conventions
+    cfg = config_dict if config_dict else {}
+
+    # Try different field names for number of experts
+    n_routed_experts = cfg.get(
+        "n_routed_experts",
+        cfg.get(
+            "num_experts",  # Qwen3, Mixtral
+            cfg.get(
+                "num_local_experts",  # Some Mixtral variants
+                cfg.get(
+                    "n_experts",  # Alternative naming
+                    getattr(
+                        config,
+                        "n_routed_experts",
+                        getattr(
+                            config,
+                            "num_experts",
+                            getattr(
+                                config,
+                                "num_local_experts",
+                                getattr(config, "n_experts", 0),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    if not n_routed_experts or n_routed_experts == 0:
+        # Not an MoE model, use regular profiling
+        return profile_model(model, config, B, L, config_dict, debug, bs_list, phase)
+
+    # Parse quantization info
+    quant_method = None
+    if isinstance(config_dict.get("quantization"), dict):
+        q = config_dict["quantization"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+    elif isinstance(config_dict.get("quantization_config"), dict):
+        q = config_dict["quantization_config"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+        quant_method = q.get("quant_method")
+    if bits == 0:
+        # Fallback: try config object then default to f16 or quant_method
+        dtype = (
+            config_dict.get("torch_dtype")
+            or config_dict.get("dtype")
+            or getattr(config, "torch_dtype", None)
+            or getattr(config, "dtype", None)
+        )
+        if not dtype and isinstance(config_dict.get("quantization_config"), dict):
+            quant_method = config_dict["quantization_config"].get("quant_method") or quant_method
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            bits = 4
+            if group_size == 0:
+                group_size = 128
+        if dtype:
+            if dtype in ("bfloat16", "bf16"):
+                bits = 16
+            elif dtype in ("float16", "fp16"):
+                bits = 16
+            elif dtype in ("float32", "f32"):
+                # Default to fp16 when quantization is not explicit
+                bits = 16
+        if bits == 0:
+            # Default to fp16 if nothing explicit is set
+            bits = 16
+
+    # Prepare per-module quantization exclusions
+    has_quant_cfg = isinstance(config_dict.get("quantization"), dict) or isinstance(
+        config_dict.get("quantization_config"), dict
+    )
+    fp_bits = 16
+    if has_quant_cfg:
+        d_dtype = (
+            config_dict.get("torch_dtype")
+            or config_dict.get("dtype")
+            or getattr(config, "torch_dtype", None)
+            or getattr(config, "dtype", None)
+        )
+        if d_dtype in ("float32", "f32"):
+            fp_bits = 32
+        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16") or d_dtype is None:
+            # Default to fp16 when dtype is missing
+            fp_bits = 16
+    exclude_patterns = []
+    if isinstance(config_dict.get("quantization_config"), dict):
+        exclude_patterns = config_dict["quantization_config"].get("modules_to_not_convert", []) or []
+
+    # Profile the model to get layer-level metrics
+    model_info = in_profile_model(
+        model,
+        config,
+        B,
+        L,
+        16,
+        bits,
+        group_size,
+        debug,
+        phase,
+        config_dict,
+        exclude_patterns,
+        fp_bits,
+    )
+
+    # Create MoE profile
+    ret = MoEModelProfileInfo()
+
+    # Populate base metrics
+    ret.b = [int(x.weight_bytes) for x in model_info]
+    ret.b_i = [int(x.input_bytes) for x in model_info]
+    ret.b_o = [int(x.output_bytes) for x in model_info]
+    ret.f_q[f"b_{B}"] = [float(x.flops) for x in model_info]
+    ret.f_out[f"b_{B}"] = ret.f_q[f"b_{B}"][-1] if ret.f_q[f"b_{B}"] else 0.0
+    ret.seq_len = int(L)
+
+    # Model-level metrics
+    ret.L = cfg.get("num_hidden_layers", getattr(config, "num_hidden_layers", len(model_info) - 1))
+    ret.e_embed = cfg.get("hidden_size", getattr(config, "hidden_size", 0))
+    ret.V = cfg.get("vocab_size", getattr(config, "vocab_size", 0))
+
+    # Attention head configuration
+    num_attention_heads = cfg.get("num_attention_heads", getattr(config, "num_attention_heads", 0))
+    ret.hk = cfg.get(
+        "num_key_value_heads",
+        getattr(config, "num_key_value_heads", num_attention_heads),
+    )
+    ret.hv = cfg.get(
+        "num_key_value_heads",
+        getattr(config, "num_key_value_heads", num_attention_heads),
+    )
+
+    # Head dimension
+    head_dim = cfg.get("head_dim", getattr(config, "head_dim", 0))
+    if head_dim == 0 and ret.e_embed > 0 and num_attention_heads > 0:
+        head_dim = ret.e_embed // num_attention_heads
+    ret.ek = head_dim
+    ret.ev = head_dim
+    ret.n_kv = cfg.get("max_position_embeddings", getattr(config, "max_position_embeddings", L))
+
+    # MoE configuration - handle various naming conventions
+    ret.n_routed_experts = n_routed_experts
+
+    # Shared experts (Qwen3 uses shared_expert_intermediate_size to indicate shared experts)
+    shared_expert_size = cfg.get(
+        "shared_expert_intermediate_size",
+        getattr(config, "shared_expert_intermediate_size", 0),
+    )
+    ret.n_shared_experts = cfg.get(
+        "n_shared_experts",
+        cfg.get(
+            "num_shared_experts",
+            getattr(
+                config,
+                "n_shared_experts",
+                getattr(config, "num_shared_experts", 1 if shared_expert_size > 0 else 0),
+            ),
+        ),
+    )  # Infer from shared_expert_intermediate_size
+
+    # Experts per token (top-k selection)
+    ret.experts_per_token = cfg.get(
+        "num_experts_per_tok",  # Standard naming
+        cfg.get(
+            "num_experts_per_token",  # Alternative
+            cfg.get(
+                "experts_per_token",  # GPT-OSS naming
+                cfg.get(
+                    "num_selected_experts",  # Alternative
+                    cfg.get(
+                        "top_k",  # Some models use top_k
+                        getattr(
+                            config,
+                            "num_experts_per_tok",
+                            getattr(
+                                config,
+                                "num_experts_per_token",
+                                getattr(
+                                    config,
+                                    "experts_per_token",
+                                    getattr(
+                                        config,
+                                        "num_selected_experts",
+                                        getattr(config, "top_k", 0),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    if ret.experts_per_token == 0:
+        raise ValueError(
+            "MoE model detected but experts_per_token not found or is 0. "
+            "Config must have one of: num_experts_per_tok, experts_per_token, "
+            "num_selected_experts, or top_k"
+        )
+
+    # MoE FFN hidden size - use intermediate_size for MoE models if no explicit MoE size
+    ret.moe_intermediate_size = cfg.get(
+        "moe_intermediate_size",  # Explicit MoE intermediate size (Qwen3)
+        cfg.get(
+            "expert_intermediate_size",  # Alternative naming
+            cfg.get(
+                "intermediate_size",  # Standard intermediate_size (GPT-OSS, Mixtral)
+                cfg.get(
+                    "ffn_dim",  # Some models
+                    getattr(
+                        config,
+                        "moe_intermediate_size",
+                        getattr(
+                            config,
+                            "expert_intermediate_size",
+                            getattr(
+                                config,
+                                "intermediate_size",
+                                getattr(config, "ffn_dim", 0),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    if ret.moe_intermediate_size == 0:
+        raise ValueError(
+            "MoE model detected but no valid intermediate/FFN size found. "
+            "Config must have one of: moe_intermediate_size, expert_intermediate_size, "
+            "intermediate_size, or ffn_dim"
+        )
+
+    # MoE layer frequency (which layers have MoE)
+    ret.moe_layer_freq = cfg.get(
+        "moe_layer_freq",
+        cfg.get(
+            "decoder_sparse_step",  # Qwen3 uses this
+            cfg.get(
+                "expert_interval",  # Alternative
+                getattr(
+                    config,
+                    "moe_layer_freq",
+                    getattr(
+                        config,
+                        "decoder_sparse_step",
+                        getattr(config, "expert_interval", 1),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    # First K dense layers (before MoE starts)
+    ret.first_k_dense_replace = cfg.get(
+        "first_k_dense_replace",
+        cfg.get(
+            "num_dense_layers",  # Alternative
+            getattr(config, "first_k_dense_replace", getattr(config, "num_dense_layers", 0)),
+        ),
+    )
+
+    # Determine MoE layer indices from parsed layers for accuracy
+    moe_indices = [i for i, layer in enumerate(model_info[1:], 1) if getattr(layer, "is_moe_layer", False)]
+    # Fallback to heuristic if parser didn't tag MoE layers
+    if not moe_indices and ret.L:
+        for layer_idx in range(1, ret.L + 1):
+            if (
+                layer_idx > ret.first_k_dense_replace
+                and (ret.moe_layer_freq or 1) > 0
+                and layer_idx % max(ret.moe_layer_freq, 1) == 0
+            ):
+                moe_indices.append(layer_idx)
+    ret.moe_layer_indices = moe_indices
+    ret.total_moe_layers = len(moe_indices)
+
+    # Extract component metrics from layer
+    ret.attn_bytes = []
+    ret.attn_flops[f"b_{B}"] = []
+
+    for idx, layer in enumerate(model_info[1:], 1):  # Skip prefill layer
+        # Attention metrics (all layers have attention)
+        ret.attn_bytes.append(layer.attn_bytes)
+        ret.attn_flops[f"b_{B}"].append(layer.attn_flops)
+
+        # MoE metrics (only for MoE layers)
+        if (getattr(layer, "is_moe_layer", False)) or (idx in moe_indices):
+            ret.bytes_per_expert[idx] = layer.moe_expert_bytes
+            ret.bytes_shared_experts[idx] = layer.moe_shared_bytes
+            ret.flops_per_expert[idx] = layer.moe_expert_flops
+            ret.flops_shared_experts[idx] = layer.moe_shared_flops
+            ret.router_flops[idx] = layer.moe_router_flops
+            ret.router_bytes[idx] = layer.moe_router_bytes
+            if hasattr(layer, "moe_expert_flops_per_token"):
+                ret.flops_per_active_expert_per_token[idx] = layer.moe_expert_flops_per_token
+
+    # Quantization label
+    if isinstance(cfg.get("quantization"), dict) or isinstance(cfg.get("quantization_config"), dict):
+        q_label = ""
+        qbits = None
+        if isinstance(cfg.get("quantization"), dict):
+            qbits = cfg["quantization"].get("bits")
+        else:
+            qbits = cfg["quantization_config"].get("bits")
+            quant_method = cfg["quantization_config"].get("quant_method")
+        try:
+            qbits = int(qbits) if qbits is not None else None
+        except Exception:
+            qbits = None
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            q_label = "MXFP4"
+        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
+        if qbits in mapping:
+            q_label = mapping[qbits]
+        if not q_label:
+            d = cfg.get("torch_dtype") or cfg.get("dtype")
+            if d in ("bfloat16", "bf16"):
+                q_label = "BF16"
+            elif d in ("float16", "fp16"):
+                q_label = "F16"
+            elif d in ("float32", "f32"):
+                q_label = "F32"
+    else:
+        q_label = "F16"
+    ret.quantization = q_label
+
+    # Multi-batch profiles
+    for Bx in bs_list:
+        tag = f"b_{Bx}"
+        layers_bx = in_profile_model(
+            model,
+            config,
+            Bx,
+            L,
+            16,
+            bits,
+            group_size,
+            0,
+            phase,
+            config_dict,
+            exclude_patterns,
+            fp_bits,
+        )
+        ret.f_q[tag] = [float(x.flops) for x in layers_bx]
+        ret.f_out[tag] = ret.f_q[tag][-1] if ret.f_q[tag] else 0.0
+        ret.attn_flops[tag] = [float(x.attn_flops) for x in layers_bx[1:]]  # Skip prefill
+
+    return ret
+
+
+def profile_model_phased(
+    model: nn.Module,
+    config,
+    B: int,
+    L: int,
+    config_dict: Dict,
+    debug=0,
+    bs_list: List[int] = [],
+):
+    # use `profile_moe_model` which auto-detects MoE models
+    prefill = profile_moe_model(
+        model,
+        config,
+        B=B,
+        L=L,
+        config_dict=config_dict,
+        debug=debug,
+        bs_list=bs_list,
+        phase="prefill",
+    )
+    decode = profile_moe_model(
+        model,
+        config,
+        B=B,
+        L=L,
+        config_dict=config_dict,
+        debug=debug,
+        bs_list=bs_list,
+        phase="decode",
+    )
+    return ModelProfilePhased(prefill=prefill, decode=decode)
+
+
+def profile_model_split(
+    model: nn.Module,
+    config,
+    B: int,
+    L: int,
+    config_dict: Dict,
+    debug=0,
+    bs_list: List[int] = [],
+):
+    phased = profile_model_phased(
+        model,
+        config,
+        B=B,
+        L=L,
+        config_dict=config_dict,
+        debug=debug,
+        bs_list=bs_list,
+    )
+    pre, dec = phased.prefill, phased.decode
+
+    # Create base split result
+    result = ModelProfileSplit(
+        b=pre.b,
+        b_i=pre.b_i,
+        b_o=pre.b_o,
+        L=pre.L,
+        hk=pre.hk,
+        hv=pre.hv,
+        ek=pre.ek,
+        ev=pre.ev,
+        n_kv=pre.n_kv,
+        e_embed=pre.e_embed,
+        V=pre.V,
+        seq_len=pre.seq_len,
+        f_q={
+            "prefill": pre.f_q,
+            "decode": dec.f_q,
+        },
+        f_out={
+            "prefill": pre.f_out,
+            "decode": dec.f_out,
+        },
+        quantization=pre.quantization,
+    )
+
+    # if this is an MoE model, populate MoE fields with the prefill
+    if isinstance(pre, MoEModelProfileInfo):
+        result.is_moe = True
+        result.n_routed_experts = pre.n_routed_experts
+        result.n_shared_experts = pre.n_shared_experts
+        result.experts_per_token = pre.experts_per_token
+        result.moe_intermediate_size = pre.moe_intermediate_size
+        result.moe_layer_freq = pre.moe_layer_freq
+        result.first_k_dense_replace = pre.first_k_dense_replace
+        result.total_moe_layers = pre.total_moe_layers
+        result.moe_layer_indices = pre.moe_layer_indices
+        result.attn_bytes = pre.attn_bytes
+        result.attn_flops = {
+            "prefill": pre.attn_flops,
+            "decode": dec.attn_flops if isinstance(dec, MoEModelProfileInfo) else {},
+        }
+        result.bytes_per_expert = pre.bytes_per_expert
+        result.bytes_shared_experts = pre.bytes_shared_experts
+        result.flops_per_expert = pre.flops_per_expert
+        result.flops_shared_experts = pre.flops_shared_experts
+        result.router_flops = pre.router_flops
+        result.router_bytes = pre.router_bytes
+        result.flops_per_active_expert_per_token = pre.flops_per_active_expert_per_token
+
+    return result

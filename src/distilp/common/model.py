@@ -6,6 +6,8 @@ from __future__ import annotations
 from typing import Dict, Literal, Optional, List
 from pydantic import BaseModel, Field
 
+type QuantizationLevel = Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"]
+
 
 # TODO: this is used by solver
 # all else used by profiler
@@ -29,9 +31,7 @@ class ModelProfile(BaseModel):
     # FLOPs per layer per batch_size, and for the output layer:
     f_q: Dict[str, float]  # (batch_size, f_q) (per "typical" layer), per batch size
     f_out: Dict[str, float]  # (batch_size, f_{q, out})   (for output layer)
-    Q: Literal[
-        "Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"
-    ]  # Model quantization level (e.g., "Q4_K", "MXFP4", etc.)
+    Q: QuantizationLevel  # Model quantization level (e.g., "Q4_K", "MXFP4", etc.)
 
     # Optional MoE-specific fields
     is_moe: bool = False  # Whether model uses Mixture of Experts

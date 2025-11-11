@@ -51,4 +51,4 @@ solver = "cli.solver:main"
 
 [tool.ruff]
 exclude = [".git", ".venv", "__pycache__", "build", "dist", "lib"]
-# line-length = 120
+line-length = 120

@@ -6,8 +6,8 @@ import importlib
 from typing import Dict, List, Optional, Tuple, Any
 from huggingface_hub import hf_hub_download
 
-from .profiler import profile_model_split
-from .profiler import profile_device as _profile_device
+from .profiler.model import profile_model_split
+from .profiler.device import profile_device as _profile_device
 from ..common import ModelProfileSplit, DeviceProfileInfo
 
 # Minimal aliasing from HF model_type to mlx_lm.models module names

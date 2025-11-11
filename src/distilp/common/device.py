@@ -123,9 +123,3 @@ class DeviceProfileInfo(BaseModel):
     # Android swap capacity (only used if os_type == "android")
     d_bytes_can_swap: int = 0  # potential bytes we allow swapping
     d_swap_avail: int = 0  # actually available swap bytes
-
-    def to_json_str(self):
-        from json import dumps
-        from dataclasses import asdict
-
-        return dumps(asdict(self))

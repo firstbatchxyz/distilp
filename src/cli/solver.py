@@ -6,7 +6,6 @@ This script loads profiles from JSON files and runs the solver.
 
 import argparse
 import json
-import sys
 
 from distilp.solver.components.loader import (
     load_devices_and_model,
@@ -108,88 +107,81 @@ Examples:
 
     args = parser.parse_args(namespace=ArgsNamespace())
 
-    try:
-        if args.profile:
-            # Load from profile folder
-            devices, model = load_from_profile_folder(args.profile)
-            if not args.quiet:
-                print(f"Loaded profile from: {args.profile}")
-        elif args.devices and args.model:
-            # Load from separate files
-            devices, model = load_devices_and_model(args.devices, args.model)
-            if not args.quiet:
-                print(f"Loaded {len(args.devices)} device file(s) and model")
-        else:
-            if args.devices and not args.model:
-                parser.error("--devices requires --model")
-            else:
-                parser.error(
-                    "Either --profile or both --devices and --model must be provided."
-                )
-        # Print summaries if verbose
-        if args.verbose:
-            print(f"\n{'=' * 60}")
-            print(f"Loaded {len(devices)} device(s):")
-            print(f"{'=' * 60}")
-
-            for i, dev in enumerate(devices, 1):
-                print(f"\n{i}. {dev.name}")
-                dev.print_summary()
-
-            model.print_summary()
-        elif not args.quiet:
-            print(f"\nLoaded {len(devices)} device(s) and model with {model.L} layers")
-
-        # Run HALDA solver
+    if args.profile:
+        # Load from profile folder
+        devices, model = load_from_profile_folder(args.profile)
         if not args.quiet:
-            print(f"\n{'=' * 60}")
-            print("Running HALDA solver...")
-            print(f"{'=' * 60}")
-
-        result = halda_solve(
-            devices, model, mip_gap=args.mip_gap, plot=not args.no_plot, kv_bits="4bit"
-        )
-
-        # Print solution
-        if args.quiet:
-            # Minimal output
-            print(f"k={result.k}, obj={result.obj_value:.6f}")
-            for dev, wi in zip(devices, result.w):
-                print(f"{dev.name}: {wi}")
+            print(f"Loaded profile from: {args.profile}")
+    elif args.devices and args.model:
+        # Load from separate files
+        devices, model = load_devices_and_model(args.devices, args.model)
+        if not args.quiet:
+            print(f"Loaded {len(args.devices)} device file(s) and model")
+    else:
+        if args.devices and not args.model:
+            parser.error("--devices requires --model")
         else:
-            result.print_solution(devices)
+            parser.error(
+                "Either --profile or both --devices and --model must be provided."
+            )
+    # Print summaries if verbose
+    if args.verbose:
+        print(f"\n{'=' * 60}")
+        print(f"Loaded {len(devices)} device(s):")
+        print(f"{'=' * 60}")
 
-        # Save solution if requested
-        if args.save_solution:
-            solution_data = {
-                "k": result.k,
-                "objective_value": result.obj_value,
-                "layer_distribution": {
-                    dev.name: {"w": wi, "n": ni}
-                    for dev, wi, ni in zip(devices, result.w, result.n)
-                },
-                "sets": {
-                    set_name: [devices[i].name for i in indices]
-                    for set_name, indices in result.sets.items()
-                },
-            }
+        for i, dev in enumerate(devices, 1):
+            print(f"\n{i}. {dev.name}")
+            dev.print_summary()
 
-            with open(args.save_solution, "w") as f:
-                json.dump(solution_data, f, indent=2)
+        model.print_summary()
+    elif not args.quiet:
+        print(f"\nLoaded {len(devices)} device(s) and model with {model.L} layers")
 
-            if not args.quiet:
-                print(f"\nSolution saved to: {args.save_solution}")
+    # Run HALDA solver
+    if not args.quiet:
+        print(f"\n{'=' * 60}")
+        print("Running HALDA solver...")
+        print(f"{'=' * 60}")
 
-        return 0
+    result = halda_solve(
+        devices, model, mip_gap=args.mip_gap, plot=not args.no_plot, kv_bits="4bit"
+    )
 
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-        if args.verbose:
-            import traceback
+    # Print solution
+    if args.quiet:
+        # Minimal output
+        print(f"k={result.k}, obj={result.obj_value:.6f}")
+        for dev, wi in zip(devices, result.w):
+            print(f"{dev.name}: {wi}")
+    else:
+        result.print_solution(devices)
 
-            traceback.print_exc()
-        return 1
+    # Save solution if requested
+    if args.save_solution:
+        solution_data = {
+            "k": result.k,
+            "objective_value": result.obj_value,
+            "layer_distribution": {
+                dev.name: {"w": wi, "n": ni}
+                for dev, wi, ni in zip(devices, result.w, result.n)
+            },
+            "sets": {
+                set_name: [devices[i].name for i in indices]
+                for set_name, indices in result.sets.items()
+            },
+        }
+
+        with open(args.save_solution, "w") as f:
+            json.dump(solution_data, f, indent=2)
+
+        if not args.quiet:
+            print(f"\nSolution saved to: {args.save_solution}")
+
+    return 0
 
 
 if __name__ == "__main__":
+    import sys
+
     sys.exit(main())

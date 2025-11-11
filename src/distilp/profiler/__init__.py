@@ -1,9 +1,11 @@
-from .profiler import (
+from .profiler.device import (
+    DeviceProfileInfo,
+)
+from .profiler.model import (
     profile_moe_model,
     profile_model_split,
     ModelProfileInfo,
     MoEModelProfileInfo,
-    DeviceProfileInfo,
 )
 from .datatypes import DeviceInfo
 from .api import load_config_from_repo, profile_model, profile_device

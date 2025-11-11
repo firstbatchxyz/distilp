@@ -28,16 +28,6 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         fp16_data = cpu_data.get("fp16", {})
         bf16_data = cpu_data.get("bf16", {})
 
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
-
         # Get all batch sizes from any precision that has them
         batch_keys = set()
         batch_keys.update(f32_data.keys())
@@ -93,16 +83,6 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         fp16_data = gpu_data.get("fp16", {})
         bf16_data = gpu_data.get("bf16", {})
 
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
-
         # Get all batch sizes
         batch_keys = set()
         batch_keys.update(f32_data.keys())
@@ -155,16 +135,6 @@ def load_device_profile(device_path: str) -> DeviceProfile:
         f32_data = gpu_data.get("f32", {})
         fp16_data = gpu_data.get("fp16", {})
         bf16_data = gpu_data.get("bf16", {})
-
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
 
         # Get all batch sizes
         batch_keys = set()
@@ -493,16 +463,6 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         fp16_data = cpu_data.get("fp16", {})
         bf16_data = cpu_data.get("bf16", {})
 
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
-
         # Get all batch sizes from any precision that has them
         batch_keys = set()
         batch_keys.update(f32_data.keys())
@@ -558,16 +518,6 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         fp16_data = gpu_data.get("fp16", {})
         bf16_data = gpu_data.get("bf16", {})
 
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
-
         # Get all batch sizes
         batch_keys = set()
         batch_keys.update(f32_data.keys())
@@ -620,16 +570,6 @@ def load_device_profile_from_dict(data: Dict[str, Any]) -> DeviceProfile:
         f32_data = gpu_data.get("f32", {})
         fp16_data = gpu_data.get("fp16", {})
         bf16_data = gpu_data.get("bf16", {})
-
-        # If old format (direct values), convert to batch dict with b_1
-        if not isinstance(f32_data, dict):
-            f32_data = {"b_1": f32_data}
-        if not isinstance(fp16_data, dict):
-            fp16_data = {"b_1": fp16_data}
-        if not isinstance(bf16_data, dict):
-            bf16_data = {
-                "b_1": bf16_data if bf16_data else f32_data.get("b_1", 0) * 0.75
-            }
 
         # Get all batch sizes
         batch_keys = set()
