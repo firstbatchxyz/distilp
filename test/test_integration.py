@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from distilp.profiler.api import profile_device, profile_model
-from distilp.solver.components.loader import load_devices_and_model
+from cli.solver import load_devices_and_model, load_from_profile_folder
 from distilp.solver import halda_solve
 
 
@@ -130,10 +130,11 @@ def test_profile_device_returns_valid_profile(test_repo_id):
     assert device_profile.d_avail_ram > 0, "Device should have available RAM"
     assert len(device_profile.scpu) > 0, "Device should have CPU throughput tables"
 
-    # Check throughput table structure
-    for dtype in ["f32", "fp16", "bf16"]:
-        assert dtype in device_profile.scpu, f"Should have {dtype} throughput"
-        assert len(device_profile.scpu[dtype]) > 0, f"{dtype} should have batch entries"
+    # Check throughput table structure (new quantization format)
+    expected_quant_levels = ["Q4_K", "Q5_K", "Q6_K", "Q8_0", "F16", "BF16", "F32"]
+    for quant_level in expected_quant_levels:
+        assert quant_level in device_profile.scpu, f"Should have {quant_level} throughput"
+        assert len(device_profile.scpu[quant_level]) > 0, f"{quant_level} should have batch entries"
 
 
 def test_profile_model_returns_valid_profile(test_repo_id):
@@ -167,8 +168,6 @@ def test_existing_profile_folder(tmpdir):
     This tests the load_from_profile_folder function which is used
     by the solver CLI with --profile flag.
     """
-    from distilp.solver.components.loader import load_from_profile_folder
-
     # Use the existing hermes_70b profile folder for testing
     profile_folder = "test/profiles/hermes_70b"
 

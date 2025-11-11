@@ -1,4 +1,4 @@
-from typing import List, Literal
+from typing import List
 from math import ceil
 from fnmatch import fnmatch
 from typing import Any
@@ -11,10 +11,8 @@ from ...common import (
     ModelProfileSplit,
     ModelProfilePhased,
 )
-from ...common.model import QuantizationLevel
+from ...common.model import QuantizationLevel, ModelPhase
 from ..models import MLX_ModelArgs
-
-type ModelPhase = Literal["merged", "prefill", "decode"]
 
 
 class LayerMetadata(BaseModel):
@@ -853,7 +851,6 @@ def parse_quantization_info(cfg: MLX_ModelArgs):
     bits: int = 0
     group_size: int = 0
     quant_method: str | None = None
-    has_quant_cfg: bool = False
     exclude_patterns: list[str] = []
 
     # try to parse from quantization / quantization_config
@@ -862,13 +859,11 @@ def parse_quantization_info(cfg: MLX_ModelArgs):
         q: dict = cfg.raw["quantization"]
         bits = int(q.get("bits", 0) or 0)
         group_size = int(q.get("group_size", 0) or 0)
-        has_quant_cfg = True
     elif isinstance(cfg.raw.get("quantization_config"), dict):
         q: dict = cfg.raw["quantization_config"]
         bits = int(q.get("bits", 0) or 0)
         group_size = int(q.get("group_size", 0) or 0)
         quant_method = q.get("quant_method")
-        has_quant_cfg = True
 
         # add per-module quantization exclusions as well
         exclude_patterns = q.get("modules_to_not_convert", []) or []

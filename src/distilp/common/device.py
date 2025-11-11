@@ -6,6 +6,8 @@ from __future__ import annotations
 from typing import Dict, Optional
 from pydantic import BaseModel, Field
 
+from .model import QuantizationLevel
+
 
 class DeviceProfile(BaseModel):
     """
@@ -30,9 +32,11 @@ class DeviceProfile(BaseModel):
     has_metal: bool = False  # I_metal (Apple Metal availability)
 
     # --- CPU performance characteristics ---
-    # Throughput tables (FLOPS) per precision and batch size
-    # Format: {"f32": {"b_1": flops, "b_2": flops, ...}, "fp16": {...}, "bf16": {...}}
-    scpu: Dict[str, Dict[str, float]] = Field(default_factory=dict)  # s^{cpu}_{m,q}
+    # Throughput tables (FLOPS) per quantization level and batch size
+    # Format: {"Q4_K": {"b_1": flops, ...}, "Q5_K": {...}, "Q6_K": {...}, "Q8_0": {...},
+    #          "F16": {...}, "BF16": {...}, "F32": {...}}
+    # Quantized values (Q4_K, Q5_K, Q6_K, Q8_0) are derived from F32 with empirical factors
+    scpu: Dict[QuantizationLevel, Dict[str, float]] = Field(default_factory=dict)  # s^{cpu}_{m,q}
     T_cpu: float = 0.0  # T^{cpu}_m (CPU register loading throughput, bytes/s)
 
     # --- KV cache transfer times (seconds) ---
@@ -52,10 +56,11 @@ class DeviceProfile(BaseModel):
     d_avail_ram: int = 0  # d^{avail}_m (available RAM)
 
     # --- GPU performance characteristics (optional, device-dependent) ---
-    # Throughput tables (FLOPS) per precision and batch size
-    # Format: {"f32": {"b_1": flops, "b_2": flops, ...}, "fp16": {...}, "bf16": {...}}
-    sgpu_cuda: Optional[Dict[str, Dict[str, float]]] = None  # s^{gpu}_{m,q} for CUDA
-    sgpu_metal: Optional[Dict[str, Dict[str, float]]] = None  # s^{gpu}_{m,q} for Metal
+    # Throughput tables (FLOPS) per quantization level and batch size
+    # Format: {"Q4_K": {"b_1": flops, ...}, "Q5_K": {...}, "Q6_K": {...}, "Q8_0": {...},
+    #          "F16": {...}, "BF16": {...}, "F32": {...}}
+    sgpu_cuda: Optional[Dict[QuantizationLevel, Dict[str, float]]] = None  # s^{gpu}_{m,q} for CUDA
+    sgpu_metal: Optional[Dict[QuantizationLevel, Dict[str, float]]] = None  # s^{gpu}_{m,q} for Metal
     T_cuda: Optional[float] = None  # T^{gpu}_m for CUDA (GPU register loading, bytes/s)
     T_metal: Optional[float] = None  # T^{gpu}_m for Metal (GPU register loading, bytes/s)
     d_avail_cuda: Optional[int] = None  # d^{avail}_{m,cuda} (available CUDA VRAM, bytes)

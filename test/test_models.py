@@ -3,6 +3,26 @@ from distilp.profiler import profile_model
 batch_sizes = [1, 2, 4]
 seq_len = 128
 
+# Qwen/Qwen3-4B-MLX-4bit
+# Qwen/Qwen3-4B-MLX-8bit
+# Qwen/Qwen3-30B-A3B-MLX-8bit
+# Qwen/Qwen3-30B-A3B-MLX-bf16
+# Qwen/Qwen3-30B-A3B-MLX-6bit
+# Qwen/Qwen3-32B-MLX-bf16
+# Qwen/Qwen3-32B-MLX-8bit
+# Qwen/Qwen3-32B-MLX-6bit
+# NousResearch/Hermes-4-70B
+# mlx-community/Meta-Llama-3.1-8B-Instruct-4bit
+# mlx-community/Meta-Llama-3.1-8B-Instruct-8bit
+# mlx-community/Meta-Llama-3.1-70B-Instruct-4bit
+# mlx-community/Meta-Llama-3.1-70B-Instruct-8bit
+# openai/gpt-oss-20b
+# mlx-community/gpt-oss-20b-MXFP4-Q4
+# mlx-community/gpt-oss-20b-MXFP4-Q8
+# openai/gpt-oss-120b
+# mlx-community/gpt-oss-120b-MXFP4-Q4
+# mlx-community/gpt-oss-120b-MXFP4-Q8
+
 
 def test_profile_qwen3_6b():
     repo = "Qwen/Qwen3-32B-MLX-6bit"

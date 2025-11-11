@@ -4,8 +4,6 @@ from .model import (
     ModelProfilePhased,
     ModelProfileSplit,
 )
-from .types import QuantizationType
-
 
 __all__ = [
     # devices
@@ -14,6 +12,4 @@ __all__ = [
     "ModelProfile",
     "ModelProfilePhased",
     "ModelProfileSplit",
-    # types
-    "QuantizationType",
 ]

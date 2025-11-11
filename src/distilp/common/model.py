@@ -7,6 +7,7 @@ from typing import Dict, Literal, Optional, List
 from pydantic import BaseModel, Field
 
 type QuantizationLevel = Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"]
+type ModelPhase = Literal["merged", "prefill", "decode"]
 
 
 class ModelProfile(BaseModel):
@@ -43,7 +44,7 @@ class ModelProfile(BaseModel):
     f_q: Dict[str, float] = Field(default_factory=dict)  # f_q (typical layer FLOPs)
     # FLOPs per batch size for output layer: {"b_1": flops, "b_2": flops, ...}
     f_out: Dict[str, float] = Field(default_factory=dict)  # f_{q,out} (output layer FLOPs)
-    Q: QuantizationLevel = "F32"  # Model quantization level (e.g., "Q4_K", "F16", etc.)
+    Q: QuantizationLevel = "F16"  # Model quantization level (e.g., "Q4_K", "F16", etc.)
 
     # --- Profiler format: optional per-layer arrays ---
     # These fields contain detailed per-layer data from the profiler
@@ -147,8 +148,8 @@ class ModelProfileSplit(BaseModel):
     seq_len: int  # sequence length used during profiling
 
     # Phase-split FLOPs: {"prefill": {"b_1": [flops per layer], ...}, "decode": {...}}
-    f_q: Dict[str, Dict[str, List[float]]]  # phase -> batch_size -> [FLOPs per layer]
-    f_out: Dict[str, Dict[str, float]]  # phase -> batch_size -> output layer FLOPs
+    f_q: Dict[ModelPhase, Dict[str, List[float]]]  # phase -> batch_size -> [FLOPs per layer]
+    f_out: Dict[ModelPhase, Dict[str, float]]  # phase -> batch_size -> output layer FLOPs
     quantization: str  # quantization label (e.g., "Q4_K", "F16")
 
     # MoE fields (optional, populated only for MoE models)
@@ -164,7 +165,7 @@ class ModelProfileSplit(BaseModel):
 
     # Component metrics for solver assignment
     attn_bytes: List[int] = Field(default_factory=list)
-    attn_flops: Dict[str, Dict[str, List[float]]] = Field(default_factory=dict)  # phase -> b_tag -> [FLOPs]
+    attn_flops: Dict[ModelPhase, Dict[str, List[float]]] = Field(default_factory=dict)  # phase -> b_tag -> [FLOPs]
     bytes_per_expert: Dict[int, int] = Field(default_factory=dict)
     bytes_shared_experts: Dict[int, int] = Field(default_factory=dict)
     flops_per_expert: Dict[int, float] = Field(default_factory=dict)
