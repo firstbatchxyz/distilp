@@ -27,6 +27,8 @@ type MODEL_ARCHS = Literal[
     "phi3",
     "gpt_oss",
 ]
+
+
 _MODEL_TYPE_ALIASES: Dict[str, MODEL_ARCHS] = {
     # Llama variants
     "llama": "llama",
@@ -58,55 +60,46 @@ _MODEL_TYPE_ALIASES: Dict[str, MODEL_ARCHS] = {
 class _MLX_ModelArgs_GPTOSS(BaseModel):
     module_name: Literal["gpt_oss"]
     args: GPTOSS.ModelArgs
-    model: GPTOSS.Model
 
 
 class _MLX_ModelArgs_PHI3(BaseModel):
     module_name: Literal["phi3"]
     args: PHI3.ModelArgs
-    model: PHI3.Model
 
 
 class _MLX_ModelArgs_LLAMA(BaseModel):
     module_name: Literal["llama"]
     args: LLAMA.ModelArgs
-    model: LLAMA.Model
 
 
 class _MLX_ModelArgs_MISTRAL(BaseModel):
     module_name: Literal["mistral"]
     args: MISTRAL.ModelArgs
-    model: MISTRAL.Model
 
 
 class _MLX_ModelArgs_QWEN2(BaseModel):
     module_name: Literal["qwen2"]
     args: QWEN2.ModelArgs
-    model: QWEN2.Model
 
 
 class _MLX_ModelArgs_QWEN2_MOE(BaseModel):
     module_name: Literal["qwen2_moe"]
     args: QWEN2_MOE.ModelArgs
-    model: QWEN2_MOE.Model
 
 
 class _MLX_ModelArgs_QWEN3(BaseModel):
     module_name: Literal["qwen3"]
     args: QWEN3.ModelArgs
-    model: QWEN3.Model
 
 
 class _MLX_ModelArgs_QWEN3_MOE(BaseModel):
     module_name: Literal["qwen3_moe"]
     args: QWEN3_MOE.ModelArgs
-    model: QWEN3_MOE.Model
 
 
 class _MLX_ModelArgs_GEMMA2(BaseModel):
     module_name: Literal["gemma2"]
     args: GEMMA2.ModelArgs
-    model: GEMMA2.Model
 
 
 class MLX_ModelArgs(BaseModel):
@@ -123,6 +116,31 @@ class MLX_ModelArgs(BaseModel):
         | _MLX_ModelArgs_QWEN3_MOE
         | _MLX_ModelArgs_GEMMA2
     ) = Field(discriminator="module_name")
+
+    # raw dictionary of original config.json
+    raw: Dict[str, Any] = Field(default_factory=dict)
+
+    def model(self):
+        if self.module.module_name == "gpt_oss":
+            return GPTOSS.Model(self.module.args)
+        elif self.module.module_name == "phi3":
+            return PHI3.Model(self.module.args)
+        elif self.module.module_name == "llama":
+            return LLAMA.Model(self.module.args)
+        elif self.module.module_name == "mistral":
+            return MISTRAL.Model(self.module.args)
+        elif self.module.module_name == "qwen2":
+            return QWEN2.Model(self.module.args)
+        elif self.module.module_name == "qwen2_moe":
+            return QWEN2_MOE.Model(self.module.args)
+        elif self.module.module_name == "qwen3":
+            return QWEN3.Model(self.module.args)
+        elif self.module.module_name == "qwen3_moe":
+            return QWEN3_MOE.Model(self.module.args)
+        elif self.module.module_name == "gemma2":
+            return GEMMA2.Model(self.module.args)
+        else:
+            raise ValueError(f"Unsupported module_name: {self.module.module_name}")
 
     def hidden_size(self) -> int:
         return self.module.args.hidden_size
@@ -248,36 +266,23 @@ def load_config_from_repo(repo_id: str) -> MLX_ModelArgs:
     except Exception as e:
         raise RuntimeError(f"Unable to download config from HuggingFace Hub for {repo_id}: {e}")
 
-    # Resolve module_name
+    # resolve module_name & load
     module_name = _resolve_module_from_config(config_dict)
-
-    return MLX_ModelArgs.model_validate({"model": {"module_name": module_name, "args": config_dict, "model": None}})
-
-    # # Load the ModelArgs class from mlx_lm
-    # try:
-    #     module = importlib.import_module(f"mlx_lm.models.{module_name}")
-    # except ImportError as e:
-    #     raise ImportError(
-    #         f"Model '{module_name}' not found in mlx_lm registry. "
-    #         f"Ensure the HF repo is MLX-compatible or pass a supported model_name. Error: {e}"
-    #     )
-
-    # ModelArgs = getattr(module, "ModelArgs", None)
-    # if ModelArgs is None:
-    #     raise ImportError(f"Could not import 'ModelArgs' from mlx_lm.models.{module_name}")
-
-    # # Filter config to only include valid ModelArgs parameters
-    # modelargs_params = inspect.signature(ModelArgs.__init__).parameters
-    # valid_params = [p for p in modelargs_params if p != "self"]
-    # filtered_config = {k: v for k, v in config_dict.items() if k in valid_params}
-
-    # # Create model config only (no model instantiation)
-    # try:
-    #     config_obj = ModelArgs(**filtered_config)
-    # except Exception as e:
-    #     raise RuntimeError(f"Unable to instantiate config for {module_name}: {e}")
-
-    # return config_obj, config_dict, module_name
+    try:
+        return MLX_ModelArgs.model_validate(
+            {
+                "module": {
+                    "module_name": module_name,
+                    "args": config_dict,
+                },
+                "raw": config_dict,
+            }
+        )
+    except ImportError as e:
+        raise ImportError(
+            f"Model '{module_name}' not found in mlx_lm registry. "
+            f"Ensure the HF repo is MLX-compatible or pass a supported model_name. Error: {e}"
+        )
 
 
 def _resolve_module_from_config(config_dict: Dict[str, Any]) -> str:

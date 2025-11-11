@@ -86,7 +86,7 @@ def main() -> int:
 
     # Load config from Hugging Face Hub using the API function
     if args.kind == "device":
-        device_profile = profile_device(args.repo_id, args.model, args.max_batch_exp, debug=args.debug_lvl)
+        device_profile = profile_device(args.repo_id, args.max_batch_exp, debug=args.debug_lvl)
         output_str = device_profile.model_dump_json(indent=2)
         if args.output_path is None:
             print(output_str)
@@ -114,6 +114,7 @@ def main() -> int:
         output_str = model_profile.model_dump_json(indent=2)
         if args.output_path is None:
             print(output_str)
+            pass
         else:
             with open(args.output_path, "w") as f:
                 f.write(output_str)

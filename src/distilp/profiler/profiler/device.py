@@ -489,7 +489,7 @@ def get_sysmem_info(device_info: DeviceInfo, debug):
 
 
 # TODO: Maybee transfer this to the Metal package
-def metal_get_memory_info(device_info, debug):
+def metal_get_memory_info(device_info: DeviceInfo, debug):
     unified_mem = platform.machine() == "arm64"
     vm = psutil.virtual_memory()
     if unified_mem:
@@ -503,26 +503,26 @@ def metal_get_memory_info(device_info, debug):
 
 
 # Get memory information
-def cuda_get_memory_info(di, debug):
+def cuda_get_memory_info(device_info: DeviceInfo, debug):
     if _has_cupy:
         free, total = cp.cuda.runtime.memGetInfo()
-        di.gpu.memory.total = total  # bytes
-        di.gpu.memory.free = free  # bytes
+        device_info.gpu.memory.total = total  # bytes
+        device_info.gpu.memory.free = free  # bytes
     else:
         if debug >= 1:
             print("CuPy not available; skipping CUDA memory info.")
 
 
-def cuda_bench_mem_to_compute(di, debug):
+def cuda_bench_mem_to_compute(device_info: DeviceInfo, debug):
     if not _has_cupy:
         if debug >= 1:
             print("CuPy not available; skipping CUDA compute-memory benchmark.")
         return
-    pass
+    pass  # TODO: !!!
 
 
 # Best aproximation, still short of ~100GB/s expected
-def metal_bench_mem_to_compute(di, debug):
+def metal_bench_mem_to_compute(device_info: DeviceInfo, debug):
     M = 512
     s_gpu = mx.new_stream(device=mx.Device(type=mx.gpu))
 
@@ -541,7 +541,7 @@ def metal_bench_mem_to_compute(di, debug):
     sec = bench(mem_load, mx.gpu, "vram_to_compute", 30, 15, debug)
     bw_cpy = (2 * M * M * M * 4) / sec
     bw_ram_read = bw_cpy
-    di.gpu.memory.vram_to_compute = bw_ram_read  # bytes/s
+    device_info.gpu.memory.vram_to_compute = bw_ram_read  # bytes/s
 
     # Clean up memory - release the large tensor
     del A
@@ -553,13 +553,14 @@ def metal_bench_mem_to_compute(di, debug):
 
 
 # Aggregate info on the current system
-def profile(config, max_batch_exp, debug) -> DeviceInfo:
+def profile(config: MLX_ModelArgs, max_batch_exp, debug) -> DeviceInfo:
     di = DeviceInfo()
     get_sysmem_info(di, debug)
     get_os(di)
     fill_cpu_info(di, debug)
-    run_cpu_benchmarks(di, config.hidden_size, max_batch_exp, debug)
-    run_gpu_benchmarks(di, config.hidden_size, max_batch_exp, debug)
+
+    run_cpu_benchmarks(di, config.hidden_size(), max_batch_exp, debug)
+    run_gpu_benchmarks(di, config.hidden_size(), max_batch_exp, debug)
     if platform.system() == "Darwin":
         metal_bench_mem_to_compute(di, debug)
         metal_get_memory_info(di, debug)
@@ -568,8 +569,8 @@ def profile(config, max_batch_exp, debug) -> DeviceInfo:
         cuda_bench_mem_to_compute(di, debug)
         cuda_get_memory_info(di, debug)
         di.gpu.name = "cuda"
-    bench_cpu_to_gpu_transfers(di, config.hidden_size, debug)
-    bench_disk_mainfs(di, debug=debug, config=config)
+    bench_cpu_to_gpu_transfers(di, config.hidden_size(), debug)
+    bench_disk_mainfs(di, debug=debug, config=config.raw)
     return di
 
 
@@ -658,13 +659,7 @@ def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) 
 
     # KV-copy times (sec) - time for a standard KV operation
     # Using a full layer KV I/O
-    kv_payload_size = 0
-    if hasattr(config, "num_attention_heads"):
-        if hasattr(config, "num_key_value_heads"):
-            head_dim = config.head_dim()
-            kv_payload_size += 2 * head_dim * config.num_key_value_heads() * mx.float16.size
-        else:
-            kv_payload_size += 2 * config.hidden_size() * mx.float16.size
+    kv_payload_size = 2 * config.head_dim() * config.num_key_value_heads() * mx.float16.size
 
     # Use cold CPU write bandwidth
     ret.t_kvcpy_cpu = kv_payload_size / device_info.memory.cpu_write_cold_bw  # s/layer

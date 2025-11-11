@@ -58,7 +58,6 @@ def profile_model(
 
 def profile_device(
     repo_id: str,
-    model_name: Optional[str] = None,
     max_batch_exp: int = 6,
     debug: int = 0,
 ) -> DeviceProfileInfo:
@@ -84,21 +83,6 @@ def profile_device(
     """
     # Load ONLY the configuration (no model instantiation to save memory)
     cfg = load_config_from_repo(repo_id)
-
-    # Wire quantization fields onto the config object so lower layers can infer storage size
-    try:
-        if isinstance(config_dict.get("quantization"), dict):
-            setattr(config_obj, "quantization", config_dict["quantization"])
-        if isinstance(config_dict.get("quantization_config"), dict):
-            setattr(config_obj, "quantization_config", config_dict["quantization_config"])
-        # Also expose dtype hints if not present on config object
-        if not hasattr(config_obj, "torch_dtype") and config_dict.get("torch_dtype"):
-            setattr(config_obj, "torch_dtype", config_dict.get("torch_dtype"))
-        if not hasattr(config_obj, "dtype") and config_dict.get("dtype"):
-            setattr(config_obj, "dtype", config_dict.get("dtype"))
-    except Exception:
-        pass
-
     device_info = _profile_device(config=cfg, debug=debug, max_batch_exp=max_batch_exp)
 
     return device_info

@@ -108,7 +108,6 @@ def in_profile_model(
 
     if debug >= 1:
         print("FMA: 2 FLOPs")
-        # print(f"Quantization: {config.quantization.bits}")
         print(f"Parsing model {cfg.model_type()}:")
         print(f"Quantization: bits={w_bits}, group_size={group_size}")
         print(
@@ -116,13 +115,13 @@ def in_profile_model(
             f"    num_hidden_layers={cfg.num_hidden_layers()}"
         )
 
-    for lyr in cfg.module.model.layers:
+    for lyr in cfg.model().layers:
         lm = LayerMetadata()
         lm.layer = lyr
         lm.name = f"decoder_{decoder_idx}"
         if any(x in lyr.__class__.__name__ for x in ["TransformerBlock", "DecoderLayer"]):
-            lm.input_bytes = (B * L * cfg.hidden_size() * a_bits) // 8
-            lm.output_bytes = (B * L * cfg.hidden_size() * a_bits) // 8
+            lm.input_bytes = ceil((B * L * cfg.hidden_size() * a_bits) / 8)
+            lm.output_bytes = ceil((B * L * cfg.hidden_size() * a_bits) / 8)
 
             # Tokens processed per phase
             tokens_prefill = B * L  # Apply attention to whole sequence
@@ -487,161 +486,131 @@ def in_profile_model(
 
                     # Low rank / Multi-head Latent Attention
                     is_mla = False
-                    # if all(hasattr(config, k) for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]) and all(
-                    #     getattr(config, k) is not None for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]
-                    # ):
-                    #     is_mla = True
+                    if all(cfg.raw.get(k) is not None for k in ["q_lora_rank", "qk_nope_head_dim", "qk_rope_head_dim"]):
+                        is_mla = True
 
                     if is_mla:
                         # Deepseek_v2,v3, Kimi_v1 and minicpm
-                        # if any(hasattr(config, k) for k in ["kv_lora_rank", "v_head_dim"]):
-                        #     # Q projections, flops and bytes
-                        #     q_head_dim = config.qk_nope_head_dim + config.qk_rope_head_dim
-                        #     q_a_proj = 2 * tokens * cfg.hidden_size() * config.q_lora_rank
-                        #     q_b_proj = 2 * tokens * config.num_attention_heads * q_head_dim * config.q_lora_rank
-                        #     q_a_proj_n = config.q_lora_rank * cfg.hidden_size()
-                        #     q_b_proj_n = config.num_attention_heads * q_head_dim * config.q_lora_rank
+                        # config = cfg.raw
+                        if any(cfg.raw.get(k) is not None for k in ["kv_lora_rank", "v_head_dim"]):
+                            # Q projections, flops and bytes
+                            q_head_dim = cfg.raw["qk_nope_head_dim"] + cfg.raw["qk_rope_head_dim"]
+                            q_a_proj = 2 * tokens * cfg.hidden_size() * cfg.raw["q_lora_rank"]
+                            q_b_proj = 2 * tokens * cfg.num_attention_heads() * q_head_dim * cfg.raw["q_lora_rank"]
+                            q_a_proj_n = cfg.raw["q_lora_rank"] * cfg.hidden_size()
+                            q_b_proj_n = cfg.num_attention_heads() * q_head_dim * cfg.raw["q_lora_rank"]
+                            # KV projections
+                            if is_gqa:
+                                pass  # TODO
+                            else:
+                                out_features = cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"]
+                                kv_a_proj_with_mqa = (
+                                    2
+                                    * tokens
+                                    * (cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"])
+                                    * cfg.hidden_size()
+                                )
+                                kv_b_proj = (
+                                    2
+                                    * tokens
+                                    * cfg.raw["kv_lora_rank"]
+                                    * cfg.num_attention_heads()
+                                    * (cfg.raw["qk_nope_head_dim"] + cfg.raw["v_head_dim"])
+                                )
+                                kv_a_proj_n = out_features * cfg.hidden_size()
+                                kv_b_proj_n = out_features * cfg.raw["kv_lora_rank"]
 
-                        #     # KV projections
-                        #     if is_gqa:
-                        #         pass  # TODO
-                        #     else:
-                        #         out_features = config.kv_lora_rank + config.qk_rope_head_dim
-                        #         kv_a_proj_with_mqa = (
-                        #             2 * tokens * (config.kv_lora_rank + config.qk_rope_head_dim) * cfg.hidden_size()
-                        #         )
-                        #         kv_b_proj = (
-                        #             2
-                        #             * tokens
-                        #             * config.kv_lora_rank
-                        #             * config.num_attention_heads
-                        #             * (config.qk_nope_head_dim + config.v_head_dim)
-                        #         )
-                        #         kv_a_proj_n = out_features * cfg.hidden_size()
-                        #         kv_b_proj_n = out_features * config.kv_lora_rank
+                            # O projection
+                            o_proj = 2 * tokens * cfg.num_attention_heads() * cfg.raw["v_head_dim"] * cfg.hidden_size()
+                            o_proj_n = cfg.hidden_size() * cfg.num_attention_heads() * cfg.raw["v_head_dim"]
+                            # KV Cache I/O
+                            kv_elems = cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"]
+                            if phase == "prefill":
+                                lm.kv_cache_w = (B * L * kv_elems * a_bits) / 8
+                                lm.kv_cache_r = 0
+                            elif phase == "decode":
+                                lm.kv_cache_w = (B * 1 * kv_elems * a_bits) / 8
+                                lm.kv_cache_r = (B * L * kv_elems * a_bits) / 8
+                            else:
+                                lm.kv_cache_w = (B * (L + 1) * kv_elems * a_bits) / 8
+                                lm.kv_cache_r = (B * L * kv_elems * a_bits) / 8
 
-                        #     # O projection
-                        #     o_proj = 2 * tokens * config.num_attention_heads * config.v_head_dim * cfg.hidden_size()
-                        #     o_proj_n = cfg.hidden_size() * config.num_attention_heads * config.v_head_dim
+                            # Totals
+                            # Attention compute FLOPs per phase
+                            attn_prefill = 4 * B * (cfg.num_attention_heads()) * (L * L) * q_head_dim
+                            attn_decode = 4 * B * (cfg.num_attention_heads()) * L * q_head_dim
+                            attn = (
+                                attn_prefill
+                                if phase == "prefill"
+                                else attn_decode
+                                if phase == "decode"
+                                else attn_prefill + attn_decode
+                            )
+                            attn_layer_flops = q_a_proj + q_b_proj + kv_a_proj_with_mqa + kv_b_proj + o_proj + attn
+                            lm.flops += attn_layer_flops
+                            lm.attn_flops = attn_layer_flops
 
-                        #     # KV Cache I/O
-                        #     kv_elems = config.kv_lora_rank + config.qk_rope_head_dim
-                        #     if phase == "prefill":
-                        #         lm.kv_cache_w = (B * L * kv_elems * a_bits) / 8
-                        #         lm.kv_cache_r = 0
-                        #     elif phase == "decode":
-                        #         lm.kv_cache_w = (B * 1 * kv_elems * a_bits) / 8
-                        #         lm.kv_cache_r = (B * L * kv_elems * a_bits) / 8
-                        #     else:
-                        #         lm.kv_cache_w = (B * (L + 1) * kv_elems * a_bits) / 8
-                        #         lm.kv_cache_r = (B * L * kv_elems * a_bits) / 8
+                            attn_path = f"model.layers.{decoder_idx}.{name}"
+                            local_w_bits = fp_bits if is_excluded(attn_path) else w_bits
+                            if local_w_bits < 16 and group_size is not None:
+                                q_a_proj_bytes = __quantized_bytes(
+                                    q_a_proj_n,
+                                    local_w_bits,
+                                    group_size,
+                                    scale_bytes,
+                                    zero_bytes,
+                                )
+                                q_b_proj_bytes = __quantized_bytes(
+                                    q_b_proj_n,
+                                    local_w_bits,
+                                    group_size,
+                                    scale_bytes,
+                                    zero_bytes,
+                                )
+                                kv_a_proj_bytes = __quantized_bytes(
+                                    kv_a_proj_n,
+                                    local_w_bits,
+                                    group_size,
+                                    scale_bytes,
+                                    zero_bytes,
+                                )
+                                kv_b_proj_bytes = __quantized_bytes(
+                                    kv_b_proj_n,
+                                    local_w_bits,
+                                    group_size,
+                                    scale_bytes,
+                                    zero_bytes,
+                                )
+                                o_proj_bytes = __quantized_bytes(
+                                    o_proj_n,
+                                    local_w_bits,
+                                    group_size,
+                                    scale_bytes,
+                                    zero_bytes,
+                                )
+                                attn_bytes = (
+                                    q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
+                                )
+                            else:
+                                q_a_proj_bytes = ceil((q_a_proj_n * local_w_bits) / 8)
+                                q_b_proj_bytes = ceil((q_b_proj_n * local_w_bits) / 8)
+                                kv_a_proj_bytes = ceil((kv_a_proj_n * local_w_bits) / 8)
+                                kv_b_proj_bytes = ceil((kv_b_proj_n * local_w_bits) / 8)
+                                o_proj_bytes = ceil((o_proj_n * local_w_bits) / 8)
+                                attn_bytes = (
+                                    q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
+                                )
 
-                        #     # Totals
-                        #     # Attention compute FLOPs per phase
-                        #     attn_prefill = 4 * B * (config.num_attention_heads) * (L * L) * q_head_dim
-                        #     attn_decode = 4 * B * (config.num_attention_heads) * L * q_head_dim
-                        #     attn = (
-                        #         attn_prefill
-                        #         if phase == "prefill"
-                        #         else attn_decode
-                        #         if phase == "decode"
-                        #         else attn_prefill + attn_decode
-                        #     )
-                        #     attn_layer_flops = q_a_proj + q_b_proj + kv_a_proj_with_mqa + kv_b_proj + o_proj + attn
-                        #     lm.flops += attn_layer_flops
-                        #     lm.attn_flops = attn_layer_flops
+                            # attn_layer_bytes = attn_bytes
+                            lm.weight_bytes += attn_bytes
+                            lm.attn_bytes = attn_bytes
 
-                        #     attn_path = f"model.layers.{decoder_idx}.{name}"
-                        #     local_w_bits = fp_bits if is_excluded(attn_path) else w_bits
-                        #     if local_w_bits < 16 and group_size is not None:
-                        #         q_a_proj_bytes = __quantized_bytes(
-                        #             q_a_proj_n,
-                        #             local_w_bits,
-                        #             group_size,
-                        #             scale_bytes,
-                        #             zero_bytes,
-                        #         )
-                        #         q_b_proj_bytes = __quantized_bytes(
-                        #             q_b_proj_n,
-                        #             local_w_bits,
-                        #             group_size,
-                        #             scale_bytes,
-                        #             zero_bytes,
-                        #         )
-                        #         kv_a_proj_bytes = __quantized_bytes(
-                        #             kv_a_proj_n,
-                        #             local_w_bits,
-                        #             group_size,
-                        #             scale_bytes,
-                        #             zero_bytes,
-                        #         )
-                        #         kv_b_proj_bytes = __quantized_bytes(
-                        #             kv_b_proj_n,
-                        #             local_w_bits,
-                        #             group_size,
-                        #             scale_bytes,
-                        #             zero_bytes,
-                        #         )
-                        #         o_proj_bytes = __quantized_bytes(
-                        #             o_proj_n,
-                        #             local_w_bits,
-                        #             group_size,
-                        #             scale_bytes,
-                        #             zero_bytes,
-                        #         )
-                        #         attn_bytes = (
-                        #             q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
-                        #         )
-                        #     else:
-                        #         q_a_proj_bytes = ceil((q_a_proj_n * local_w_bits) / 8)
-                        #         q_b_proj_bytes = ceil((q_b_proj_n * local_w_bits) / 8)
-                        #         kv_a_proj_bytes = ceil((kv_a_proj_n * local_w_bits) / 8)
-                        #         kv_b_proj_bytes = ceil((kv_b_proj_n * local_w_bits) / 8)
-                        #         o_proj_bytes = ceil((o_proj_n * local_w_bits) / 8)
-                        #         attn_bytes = (
-                        #             q_a_proj_bytes + q_b_proj_bytes + kv_a_proj_bytes + kv_b_proj_bytes + o_proj_bytes
-                        #         )
-
-                        #     # attn_layer_bytes = attn_bytes
-                        #     lm.weight_bytes += attn_bytes
-                        #     lm.attn_bytes = attn_bytes
-
-                        #     if debug >= 1:
-                        #         print(
-                        #             f"\tMulti-head Latent Attention Layer {'with Group Query Attention' if is_gqa else ''}:"
-                        #         )
-                        #         print(
-                        #             f"\t\tq_a_proj: [{cfg.hidden_size()}, {config.q_lora_rank} ], FLOPs={q_a_proj}, b={q_a_proj_bytes}"
-                        #         )
-                        #         print(
-                        #             f"\t\tq_b_proj: [{config.num_attention_heads * q_head_dim}, {config.q_lora_rank}], "
-                        #             f"FLOPs={q_b_proj}, b={q_b_proj_bytes}"
-                        #         )
-                        #         print(
-                        #             f"\t\tkv_a_proj_with_mqa: [{cfg.hidden_size()}, {config.kv_lora_rank + config.qk_rope_head_dim}], "
-                        #             f"FLOPs={kv_a_proj_with_mqa}, b={kv_a_proj_bytes}"
-                        #         )
-                        #         print(
-                        #             f"\t\tkv_b_proj: [{config.kv_lora_rank}, "
-                        #             f"{config.num_attention_heads * (config.qk_nope_head_dim + config.v_head_dim)}], "
-                        #             f"FLOPs={kv_b_proj}, b={kv_b_proj_bytes}"
-                        #         )
-                        #         print(
-                        #             f"\t\to_proj: [{config.num_attention_heads * config.v_head_dim}, {cfg.hidden_size()}], "
-                        #             f"FLOPs={o_proj}, b={o_proj_bytes}"
-                        #         )
-                        #         print(
-                        #             f"\t\tFLOPs={q_a_proj + q_b_proj + kv_a_proj_with_mqa + kv_b_proj + o_proj + attn} "
-                        #             f"b={attn_bytes}"
-                        #         )
-
-                        #     continue
+                            continue
 
                         # Low-rank Replace (not implemented)
-                        # else:
-                        #     pass
-                        pass
-
+                        else:
+                            # FIXME::
+                            pass
                     # Grouped Query Attention
                     elif is_gqa:
                         head_size = cfg.hidden_size() // cfg.num_attention_heads()
@@ -807,71 +776,8 @@ def profile_model(
     bs_list: List[int] = [],
     phase: ModelPhase = "merged",
 ):
-    dtype = None
-    bits = 0
-    group_size = 0
-
-    # Prefer explicit quantization section for bit-width
-    quant_method = None
-    if isinstance(config_dict.get("quantization"), dict):
-        q = config_dict["quantization"]
-        bits = int(q.get("bits", 0) or 0)
-        group_size = int(q.get("group_size", 0) or 0)
-    elif isinstance(config_dict.get("quantization_config"), dict):
-        q = config_dict["quantization_config"]
-        bits = int(q.get("bits", 0) or 0)
-        group_size = int(q.get("group_size", 0) or 0)
-        quant_method = q.get("quant_method")
-    # Fallback to dtype when no explicit quantization
-    if bits == 0:
-        # Try config_dict first, then the config object, then default to f16
-        dtype = (
-            config_dict.get("torch_dtype")
-            or config_dict.get("dtype")
-            or getattr(config, "torch_dtype", None)
-            or getattr(config, "dtype", None)
-        )
-        # Map quant_method if present (e.g., mxfp4)
-        if not dtype and isinstance(config_dict.get("quantization_config"), dict):
-            quant_method = config_dict["quantization_config"].get("quant_method") or quant_method
-        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
-            bits = 4
-            # Default a group size if none provided
-            if group_size == 0:
-                group_size = 128
-        if dtype:
-            if dtype in ("bfloat16", "bf16"):
-                bits = 16
-            elif dtype in ("float16", "fp16"):
-                bits = 16
-            elif dtype in ("float32", "f32"):
-                # Default to fp16 when quantization is not explicit
-                bits = 16
-        if bits == 0:
-            # Default to fp16 if nothing explicit is set
-            bits = 16
-
-    # Determine fp_bits for exclusions (non-quantized modules)
-    has_quant_cfg = isinstance(config_dict.get("quantization"), dict) or isinstance(
-        config_dict.get("quantization_config"), dict
-    )
-    fp_bits = 16
-    if has_quant_cfg:
-        d_dtype = (
-            config_dict.get("torch_dtype")
-            or config_dict.get("dtype")
-            or getattr(config, "torch_dtype", None)
-            or getattr(config, "dtype", None)
-        )
-        if d_dtype in ("float32", "f32"):
-            fp_bits = 32
-        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16") or d_dtype is None:
-            fp_bits = 16
-
-    # Quantization exclusions
-    exclude_patterns = []
-    if isinstance(config_dict.get("quantization_config"), dict):
-        exclude_patterns = config_dict["quantization_config"].get("modules_to_not_convert", []) or []
+    # parse quantization info
+    bits, group_size, exclude_patterns, fp_bits, q_label = parse_quantization_info(cfg)
 
     model_info = in_profile_model(
         cfg,
@@ -912,35 +818,6 @@ def profile_model(
     # KV cache tokens (using max position embeddings as proxy)
     ret.n_kv = cfg.max_position_embeddings(L)
 
-    # Add quantization label
-    # If no explicit quantization, default label to F16
-    q_label = ""
-    if isinstance(cfg.get("quantization"), dict) or isinstance(cfg.get("quantization_config"), dict):
-        qbits = None
-        if isinstance(cfg.get("quantization"), dict):
-            qbits = cfg["quantization"].get("bits")
-        else:
-            qbits = cfg["quantization_config"].get("bits")
-            quant_method = cfg["quantization_config"].get("quant_method")
-        try:
-            qbits = int(qbits) if qbits is not None else None
-        except Exception:
-            qbits = None
-        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
-            q_label = "MXFP4"
-        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
-        if qbits in mapping:
-            q_label = mapping[qbits]
-        if not q_label:
-            d = cfg.get("torch_dtype") or cfg.get("dtype")
-            if d in ("bfloat16", "bf16"):
-                q_label = "BF16"
-            elif d in ("float16", "fp16"):
-                q_label = "F16"
-            elif d in ("float32", "f32"):
-                q_label = "F32"
-    else:
-        q_label = "F16"
     ret.quantization = q_label
 
     # Multi-batch-size profiles: only if provided via --batches
@@ -964,6 +841,99 @@ def profile_model(
     return ret
 
 
+def parse_quantization_info(cfg: MLX_ModelArgs):
+    """
+    Parse quantization information from the model config.
+    Returns (bits, group_size, exclude_patterns, fp_bits, q_label).
+    """
+    bits: int = 0
+    group_size: int = 0
+    quant_method: str | None = None
+    has_quant_cfg: bool = False
+    exclude_patterns: list[str] = []
+
+    # try to parse from quantization / quantization_config
+    # because we prefer explicit quantization section for bit-width
+    if isinstance(cfg.raw.get("quantization"), dict):
+        q: dict = cfg.raw["quantization"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+        has_quant_cfg = True
+    elif isinstance(cfg.raw.get("quantization_config"), dict):
+        q: dict = cfg.raw["quantization_config"]
+        bits = int(q.get("bits", 0) or 0)
+        group_size = int(q.get("group_size", 0) or 0)
+        quant_method = q.get("quant_method")
+        has_quant_cfg = True
+
+        # add per-module quantization exclusions as well
+        exclude_patterns = q.get("modules_to_not_convert", []) or []
+
+    # if bits is still 0, try to infer from dtype or quant_method
+    if bits == 0:
+        dtype = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
+        if not dtype and isinstance(cfg.raw.get("quantization_config"), dict):
+            quant_method = cfg.raw["quantization_config"].get("quant_method") or quant_method
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            bits = 4
+            if group_size == 0:
+                group_size = 128
+        if dtype:
+            if dtype in ("bfloat16", "bf16"):
+                bits = 16
+            elif dtype in ("float16", "fp16"):
+                bits = 16
+            elif dtype in ("float32", "f32"):
+                bits = 32
+        if bits == 0:
+            bits = 16  # default to fp16
+
+    fp_bits = 16
+    if has_quant_cfg:
+        d_dtype = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
+        if d_dtype in ("float32", "f32"):
+            fp_bits = 32
+        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16"):
+            fp_bits = 16
+        else:
+            # Default to fp16 when dtype is missing
+            fp_bits = 16
+
+    # Add quantization label
+    # If no explicit quantization, default label to F16
+    q_label = ""
+    if isinstance(cfg.raw.get("quantization"), dict) or isinstance(cfg.raw.get("quantization_config"), dict):
+        qbits = None
+        if isinstance(cfg.raw.get("quantization"), dict):
+            qbits = cfg.raw.get("quantization", {}).get("bits")
+        else:
+            qbits = cfg.raw.get("quantization_config", {}).get("bits")
+            quant_method = cfg.raw.get("quantization_config", {}).get("quant_method")
+
+        try:
+            qbits = int(qbits) if qbits is not None else None
+        except Exception:
+            qbits = None
+        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+            q_label = "MXFP4"
+
+        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
+        if qbits in mapping:
+            q_label = mapping[qbits]
+        if not q_label:
+            d = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
+            if d in ("bfloat16", "bf16"):
+                q_label = "BF16"
+            elif d in ("float16", "fp16"):
+                q_label = "F16"
+            elif d in ("float32", "f32"):
+                q_label = "F32"
+    else:
+        q_label = "F16"
+
+    return bits, group_size, exclude_patterns, fp_bits, q_label
+
+
 def profile_moe_model(
     cfg: MLX_ModelArgs,
     B: int = 1,
@@ -976,9 +946,6 @@ def profile_moe_model(
     Profile an MoE model with component-level metrics for solver assignment.
     Returns MoEModelProfileInfo if MoE is detected, otherwise returns ModelProfileInfo.
     """
-    dtype = None
-    bits = 0
-    group_size = 0
 
     # Try different field names for number of experts
     n_routed_experts = cfg.n_routed_experts()
@@ -986,77 +953,21 @@ def profile_moe_model(
         # Not an MoE model, use regular profiling
         return profile_model(cfg, B, L, debug, bs_list, phase)
 
-    # Parse quantization info
-    quant_method = None
-
-    if isinstance(config_dict.get("quantization"), dict):
-        q = config_dict["quantization"]
-        bits = int(q.get("bits", 0) or 0)
-        group_size = int(q.get("group_size", 0) or 0)
-    elif isinstance(config_dict.get("quantization_config"), dict):
-        q = config_dict["quantization_config"]
-        bits = int(q.get("bits", 0) or 0)
-        group_size = int(q.get("group_size", 0) or 0)
-        quant_method = q.get("quant_method")
-    if bits == 0:
-        # Fallback: try config object then default to f16 or quant_method
-        dtype = (
-            config_dict.get("torch_dtype")
-            or config_dict.get("dtype")
-            or getattr(cfg.module.args, "torch_dtype", None)
-            or getattr(cfg.module.args, "dtype", None)
-        )
-        if not dtype and isinstance(config_dict.get("quantization_config"), dict):
-            quant_method = config_dict["quantization_config"].get("quant_method") or quant_method
-        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
-            bits = 4
-            if group_size == 0:
-                group_size = 128
-        if dtype:
-            if dtype in ("bfloat16", "bf16"):
-                bits = 16
-            elif dtype in ("float16", "fp16"):
-                bits = 16
-            elif dtype in ("float32", "f32"):
-                # Default to fp16 when quantization is not explicit
-                bits = 16
-        if bits == 0:
-            # Default to fp16 if nothing explicit is set
-            bits = 16
-
-    # Prepare per-module quantization exclusions
-    has_quant_cfg = isinstance(config_dict.get("quantization"), dict) or isinstance(
-        config_dict.get("quantization_config"), dict
-    )
-    fp_bits = 16
-    if has_quant_cfg:
-        d_dtype = (
-            config_dict.get("torch_dtype")
-            or config_dict.get("dtype")
-            or getattr(cfg.module.args, "torch_dtype", None)
-            or getattr(cfg.module.args, "dtype", None)
-        )
-        if d_dtype in ("float32", "f32"):
-            fp_bits = 32
-        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16") or d_dtype is None:
-            # Default to fp16 when dtype is missing
-            fp_bits = 16
-    exclude_patterns = []
-    if isinstance(config_dict.get("quantization_config"), dict):
-        exclude_patterns = config_dict["quantization_config"].get("modules_to_not_convert", []) or []
+    # parse quantization info
+    bits, group_size, exclude_patterns, fp_bits, q_label = parse_quantization_info(cfg)
 
     # Profile the model to get layer-level metrics
     model_info = in_profile_model(
         cfg,
-        B,
-        L,
-        16,
-        bits,
-        group_size,
-        debug,
-        phase,
-        exclude_patterns,
-        fp_bits,
+        B=B,
+        L=L,
+        a_bits=16,
+        w_bits=bits,
+        group_size=group_size,
+        debug=debug,
+        phase=phase,
+        exclude_patterns=exclude_patterns,
+        fp_bits=fp_bits,
     )
 
     # Create MoE profile
@@ -1149,34 +1060,6 @@ def profile_moe_model(
             if hasattr(layer, "moe_expert_flops_per_token"):
                 ret.flops_per_active_expert_per_token[idx] = layer.moe_expert_flops_per_token
 
-    # Quantization label
-    if isinstance(cfg.get("quantization"), dict) or isinstance(cfg.get("quantization_config"), dict):
-        q_label = ""
-        qbits = None
-        if isinstance(cfg.get("quantization"), dict):
-            qbits = cfg["quantization"].get("bits")
-        else:
-            qbits = cfg["quantization_config"].get("bits")
-            quant_method = cfg["quantization_config"].get("quant_method")
-        try:
-            qbits = int(qbits) if qbits is not None else None
-        except Exception:
-            qbits = None
-        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
-            q_label = "MXFP4"
-        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
-        if qbits in mapping:
-            q_label = mapping[qbits]
-        if not q_label:
-            d = cfg.get("torch_dtype") or cfg.get("dtype")
-            if d in ("bfloat16", "bf16"):
-                q_label = "BF16"
-            elif d in ("float16", "fp16"):
-                q_label = "F16"
-            elif d in ("float32", "f32"):
-                q_label = "F32"
-    else:
-        q_label = "F16"
     ret.quantization = q_label
 
     # Multi-batch profiles
@@ -1189,7 +1072,7 @@ def profile_moe_model(
             16,
             bits,
             group_size,
-            0,
+            0,  # do not debug
             phase,
             exclude_patterns,
             fp_bits,
