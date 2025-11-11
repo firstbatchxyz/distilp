@@ -1,9 +1,9 @@
 from __future__ import annotations
 from pydantic import BaseModel
-from typing import Dict, List, Optional, Tuple, Literal
+from typing import Dict, List, Optional, Tuple
 import math
 
-from ...common import DeviceProfile, ModelProfile
+from ...common import DeviceProfile, ModelProfile, QuantizationLevel
 
 
 def valid_factors_of_L(L: int) -> List[int]:
@@ -48,8 +48,8 @@ def b_prime(
 
 def _sum_f_over_S(
     f_by_q: Dict[str, float],
-    S_by_q: Dict[str, Dict[str, float]],  # dict[str, dict[str, dict[str, float]]]
-    q: Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"],
+    S_by_q: Dict[QuantizationLevel, Dict[str, float]],
+    q: QuantizationLevel,
     batch_size: int = 1,
 ) -> float:
     """
@@ -61,17 +61,13 @@ def _sum_f_over_S(
     total = 0.0
     if batch_key in f_by_q and q in S_by_q:
         if batch_key not in S_by_q[q]:
-            raise ValueError(
-                f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]"
-            )
+            raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in S_by_q[{q}]")
         s_val = S_by_q[q][batch_key]
 
         # Handle f_by_q which might also have batch sizes in future
         if isinstance(f_by_q, dict):
             if batch_key not in f_by_q:
-                raise ValueError(
-                    f"Batch size {batch_size} (key '{batch_key}') not found in f_by_q[{q}]"
-                )
+                raise ValueError(f"Batch size {batch_size} (key '{batch_key}') not found in f_by_q[{q}]")
             f_val = f_by_q[batch_key]
 
         if s_val > 0:
@@ -79,7 +75,7 @@ def _sum_f_over_S(
     return total
 
 
-def _gpu_table(dev: DeviceProfile) -> Optional[Dict[str, Dict[str, float]]]:
+def _gpu_table(dev: DeviceProfile) -> Optional[Dict[QuantizationLevel, Dict[str, float]]]:
     """
     Pick the GPU FLOPS table for this device (Metal preferred when present).
     """
@@ -101,9 +97,7 @@ def _pick_T_gpu(dev: DeviceProfile) -> Optional[float]:
     return None
 
 
-def alpha_beta_xi(
-    dev: DeviceProfile, model: ModelProfile, kv_factor: float = 1.0
-) -> Tuple[float, float, float]:
+def alpha_beta_xi(dev: DeviceProfile, model: ModelProfile, kv_factor: float = 1.0) -> Tuple[float, float, float]:
     """
     α_m, β_m, ξ_m exactly as defined under Assumption 1.  [App. A.3, Eq. 21 block]
     """
@@ -117,11 +111,7 @@ def alpha_beta_xi(
     T_gpu = _pick_T_gpu(dev)
     if S_gpu is not None and T_gpu is not None:
         comp_gpu_minus_cpu = _sum_f_over_S(model.f_q, S_gpu, model.Q) - comp_cpu
-        beta = (
-            comp_gpu_minus_cpu
-            + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu)
-            + (bprime / T_gpu - bprime / dev.T_cpu)
-        )
+        beta = comp_gpu_minus_cpu + (dev.t_kvcpy_gpu - dev.t_kvcpy_cpu) + (bprime / T_gpu - bprime / dev.T_cpu)
     else:
         beta = 0.0
 
@@ -133,9 +123,7 @@ def b_cio_b(dev: DeviceProfile, model: ModelProfile) -> float:
     """
     b^cio_m = (b_i/V + b_o)·I_{m=1} + c^{cpu}.   [Eq. (34)]
     """
-    return ((model.b_in / model.V) + model.b_out) * (
-        1.0 if dev.is_head else 0.0
-    ) + dev.c_cpu
+    return ((model.b_in / model.V) + model.b_out) * (1.0 if dev.is_head else 0.0) + dev.c_cpu
 
 
 def classify_device_case(
@@ -220,9 +208,7 @@ def objective_vectors(
     return a, b, c
 
 
-def kappa_constant(
-    devs: List[DeviceProfile], model: ModelProfile, sets: Dict[str, List[int]]
-) -> float:
+def kappa_constant(devs: List[DeviceProfile], model: ModelProfile, sets: Dict[str, List[int]]) -> float:
     """
     κ aggregates the constant parts in Eq. (21) that do not multiply l_m, n_m, or W_m.  [App. A.3]
     """
@@ -233,9 +219,7 @@ def kappa_constant(
     head_compute = _sum_f_over_S(model.f_out, head.scpu, model.Q)
     head_load_regs = (model.b_in / model.V + model.b_out) / head.T_cpu
     head_disk_in = model.b_in / (model.V * head.s_disk)
-    head_disk_out = (
-        (model.b_out / head.s_disk) if (head_idx not in sets.get("M4", [])) else 0.0
-    )
+    head_disk_out = (model.b_out / head.s_disk) if (head_idx not in sets.get("M4", [])) else 0.0
 
     tail_const = 0.0
     for mi in sets.get("M1", []) + sets.get("M3", []):

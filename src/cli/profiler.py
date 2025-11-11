@@ -86,9 +86,7 @@ def main() -> int:
 
     # Load config from Hugging Face Hub using the API function
     if args.kind == "device":
-        device_profile = profile_device(
-            args.repo_id, args.model, args.max_batch_exp, debug=args.debug_lvl
-        )
+        device_profile = profile_device(args.repo_id, args.max_batch_exp, debug=args.debug_lvl)
         output_str = device_profile.model_dump_json(indent=2)
         if args.output_path is None:
             print(output_str)
@@ -105,9 +103,7 @@ def main() -> int:
         except ValueError:
             raise ValueError("--batches must be a comma-separated list of integers.")
         if len(bs_list) == 0:
-            raise ValueError(
-                "--batches must contain at least one batch size, e.g., --batches 1 or --batches 1,2,4."
-            )
+            raise ValueError("--batches must contain at least one batch size, e.g., --batches 1 or --batches 1,2,4.")
 
         model_profile = profile_model(
             args.repo_id,
@@ -118,14 +114,13 @@ def main() -> int:
         output_str = model_profile.model_dump_json(indent=2)
         if args.output_path is None:
             print(output_str)
+            pass
         else:
             with open(args.output_path, "w") as f:
                 f.write(output_str)
 
     else:
-        raise ValueError(
-            "Unknown 'return' argument. We can only handle 'model' or 'device'."
-        )
+        pass  # unreachable due to argparse choices
     return 0
 
 

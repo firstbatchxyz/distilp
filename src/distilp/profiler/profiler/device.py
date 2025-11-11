@@ -12,10 +12,11 @@ import fcntl
 import mlx.core as mx
 from typing import Any, Callable
 
+from distilp.common.model import QuantizationLevel
+from distilp.profiler.models import MLX_ModelArgs
+
 from ..datatypes import DeviceInfo
-from ...common import (
-    DeviceProfileInfo,
-)
+from ...common import DeviceProfile
 
 try:
     import cupy as cp  # type: ignore | optional dep
@@ -487,7 +488,7 @@ def get_sysmem_info(device_info: DeviceInfo, debug):
 
 
 # TODO: Maybee transfer this to the Metal package
-def metal_get_memory_info(device_info, debug):
+def metal_get_memory_info(device_info: DeviceInfo, debug):
     unified_mem = platform.machine() == "arm64"
     vm = psutil.virtual_memory()
     if unified_mem:
@@ -501,26 +502,26 @@ def metal_get_memory_info(device_info, debug):
 
 
 # Get memory information
-def cuda_get_memory_info(di, debug):
+def cuda_get_memory_info(device_info: DeviceInfo, debug):
     if _has_cupy:
         free, total = cp.cuda.runtime.memGetInfo()
-        di.gpu.memory.total = total  # bytes
-        di.gpu.memory.free = free  # bytes
+        device_info.gpu.memory.total = total  # bytes
+        device_info.gpu.memory.free = free  # bytes
     else:
         if debug >= 1:
             print("CuPy not available; skipping CUDA memory info.")
 
 
-def cuda_bench_mem_to_compute(di, debug):
+def cuda_bench_mem_to_compute(device_info: DeviceInfo, debug):
     if not _has_cupy:
         if debug >= 1:
             print("CuPy not available; skipping CUDA compute-memory benchmark.")
         return
-    pass
+    pass  # TODO: !!!
 
 
 # Best aproximation, still short of ~100GB/s expected
-def metal_bench_mem_to_compute(di, debug):
+def metal_bench_mem_to_compute(device_info: DeviceInfo, debug):
     M = 512
     s_gpu = mx.new_stream(device=mx.Device(type=mx.gpu))
 
@@ -539,7 +540,7 @@ def metal_bench_mem_to_compute(di, debug):
     sec = bench(mem_load, mx.gpu, "vram_to_compute", 30, 15, debug)
     bw_cpy = (2 * M * M * M * 4) / sec
     bw_ram_read = bw_cpy
-    di.gpu.memory.vram_to_compute = bw_ram_read  # bytes/s
+    device_info.gpu.memory.vram_to_compute = bw_ram_read  # bytes/s
 
     # Clean up memory - release the large tensor
     del A
@@ -551,13 +552,14 @@ def metal_bench_mem_to_compute(di, debug):
 
 
 # Aggregate info on the current system
-def profile(config, max_batch_exp, debug) -> DeviceInfo:
+def profile(config: MLX_ModelArgs, max_batch_exp, debug) -> DeviceInfo:
     di = DeviceInfo()
     get_sysmem_info(di, debug)
     get_os(di)
     fill_cpu_info(di, debug)
-    run_cpu_benchmarks(di, config.hidden_size, max_batch_exp, debug)
-    run_gpu_benchmarks(di, config.hidden_size, max_batch_exp, debug)
+
+    run_cpu_benchmarks(di, config.hidden_size(), max_batch_exp, debug)
+    run_gpu_benchmarks(di, config.hidden_size(), max_batch_exp, debug)
     if platform.system() == "Darwin":
         metal_bench_mem_to_compute(di, debug)
         metal_get_memory_info(di, debug)
@@ -566,13 +568,13 @@ def profile(config, max_batch_exp, debug) -> DeviceInfo:
         cuda_bench_mem_to_compute(di, debug)
         cuda_get_memory_info(di, debug)
         di.gpu.name = "cuda"
-    bench_cpu_to_gpu_transfers(di, config.hidden_size, debug)
-    bench_disk_mainfs(di, debug=debug, config=config)
+    bench_cpu_to_gpu_transfers(di, config.hidden_size(), debug)
+    bench_disk_mainfs(di, debug=debug, config=config.raw)
     return di
 
 
 # Get device information in solver variable names
-def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfileInfo:
+def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) -> DeviceProfile:
     """
     Profile the device and return device-specific information.
 
@@ -585,7 +587,7 @@ def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfil
     `is_head` defaults to True for single-device profiling.
     """
     device_info = profile(config, max_batch_exp, debug)
-    ret = DeviceProfileInfo()
+    ret = DeviceProfile()
 
     # Set device name (hostname or identifier)
     ret.name = platform.node() or "device"
@@ -617,52 +619,85 @@ def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfil
     # Set is_head to True by default (single device scenario)
     ret.is_head = is_head
 
-    # CPU throughput tables (FLOPS)
-    scpu_dtypes = ["f32", "fp16", "bf16"]
+    # CPU throughput tables (FLOPS) - convert to quantization format
     scpu_batches = [f"b_{2**n}" for n in range(max_batch_exp)]
-    ret.scpu = {}
-    for dtype in scpu_dtypes:
-        ret.scpu.update({dtype: {}})
-        di_type = getattr(device_info.cpu.benchmarks, dtype)
-        for b in scpu_batches:
-            _val = ret.scpu.get(dtype, {})
-            _val.update({b: getattr(di_type, b)})
-            ret.scpu.update({dtype: _val})
+
+    # Get benchmark data for base precisions
+    f32_benchmarks = device_info.cpu.benchmarks.f32
+    fp16_benchmarks = device_info.cpu.benchmarks.fp16
+    bf16_benchmarks = device_info.cpu.benchmarks.bf16
+
+    # Build quantization performance dict with batch sizes
+    ret.scpu = {
+        "Q4_K": {},
+        "Q5_K": {},
+        "Q6_K": {},
+        "Q8_0": {},
+        "F16": {},
+        "BF16": {},
+        "F32": {},
+    }
+
+    for batch_key in scpu_batches:
+        f32_val = getattr(f32_benchmarks, batch_key)
+        fp16_val = getattr(fp16_benchmarks, batch_key)
+        bf16_val = getattr(bf16_benchmarks, batch_key)
+
+        # Map to quantization types used by solver
+        ret.scpu["Q4_K"][batch_key] = f32_val * 0.25  # Q4_K typically ~25% of f32 FLOPS
+        ret.scpu["Q5_K"][batch_key] = f32_val * 0.31  # Q5_K typically ~31% of f32 FLOPS
+        ret.scpu["Q6_K"][batch_key] = f32_val * 0.37  # Q6_K typically ~37% of f32 FLOPS
+        ret.scpu["Q8_0"][batch_key] = f32_val * 0.5  # Q8_0 typically ~50% of f32 FLOPS
+        ret.scpu["F16"][batch_key] = fp16_val
+        ret.scpu["BF16"][batch_key] = bf16_val
+        ret.scpu["F32"][batch_key] = f32_val
 
     # CPU register loading throughput (bytes/s) - use warm bandwidth
     ret.T_cpu = device_info.memory.cpu_read_warm_bw  # Already in bytes/s
 
-    # GPU throughput tables (FLOPS) - separate for CUDA and Metal
-    sgpu_dtypes = ["f32", "fp16", "bf16"]
+    # GPU throughput tables (FLOPS) - convert to quantization format
     sgpu_batches = [f"b_{2**n}" for n in range(max_batch_exp)]
-    _field = {}
-    for dtype in sgpu_dtypes:
-        _field.update({dtype: {}})
-        di_type = getattr(device_info.gpu.benchmarks, dtype)
-        for b in sgpu_batches:
-            _val = _field.get(dtype, {})
-            _val.update({b: getattr(di_type, b)})
-            _field.update({dtype: _val})
 
-    # CUDA memory throughput (bytes/s)
+    # Get GPU benchmark data for base precisions
+    gpu_f32_benchmarks = device_info.gpu.benchmarks.f32
+    gpu_fp16_benchmarks = device_info.gpu.benchmarks.fp16
+    gpu_bf16_benchmarks = device_info.gpu.benchmarks.bf16
+
+    # Build quantization performance dict
+    sgpu_dict: dict[QuantizationLevel, dict[str, float]] = {
+        "Q4_K": {},
+        "Q5_K": {},
+        "Q6_K": {},
+        "Q8_0": {},
+        "F16": {},
+        "BF16": {},
+        "F32": {},
+    }
+
+    for batch_key in sgpu_batches:
+        gpu_f32_val = getattr(gpu_f32_benchmarks, batch_key)
+        gpu_fp16_val = getattr(gpu_fp16_benchmarks, batch_key)
+        gpu_bf16_val = getattr(gpu_bf16_benchmarks, batch_key)
+
+        sgpu_dict["Q4_K"][batch_key] = gpu_f32_val * 0.25
+        sgpu_dict["Q5_K"][batch_key] = gpu_f32_val * 0.31
+        sgpu_dict["Q6_K"][batch_key] = gpu_f32_val * 0.37
+        sgpu_dict["Q8_0"][batch_key] = gpu_f32_val * 0.5
+        sgpu_dict["F16"][batch_key] = gpu_fp16_val
+        sgpu_dict["BF16"][batch_key] = gpu_bf16_val
+        sgpu_dict["F32"][batch_key] = gpu_f32_val
+
+    # Assign to appropriate GPU type
     if ret.has_cuda:
-        ret.sgpu_cuda = _field
+        ret.sgpu_cuda = sgpu_dict
         ret.T_cuda = device_info.gpu.memory.vram_to_compute  # Already in bytes/s
-
-    # Metal memory throughput (bytes/s)
     elif ret.has_metal:
-        ret.sgpu_metal = _field
+        ret.sgpu_metal = sgpu_dict
         ret.T_metal = device_info.gpu.memory.vram_to_compute  # Already in bytes/s
 
     # KV-copy times (sec) - time for a standard KV operation
     # Using a full layer KV I/O
-    kv_payload_size = 0
-    if hasattr(config, "num_attention_heads"):
-        if hasattr(config, "num_key_value_heads"):
-            head_dim = config.hidden_size // config.num_attention_heads
-            kv_payload_size += 2 * head_dim * config.num_key_value_heads * mx.float16.size
-        else:
-            kv_payload_size += 2 * config.hidden_size * mx.float16.size
+    kv_payload_size = 2 * config.head_dim() * config.num_key_value_heads() * mx.float16.size
 
     # Use cold CPU write bandwidth
     ret.t_kvcpy_cpu = kv_payload_size / device_info.memory.cpu_write_cold_bw  # s/layer

@@ -6,12 +6,135 @@ This script loads profiles from JSON files and runs the solver.
 
 import argparse
 import json
+from pathlib import Path
 
-from distilp.solver.components.loader import (
-    load_devices_and_model,
-    load_from_profile_folder,
-)
+from distilp.common import DeviceProfile, ModelProfile, ModelProfileSplit
 from distilp.solver import halda_solve
+
+
+def load_device_profile(device_path: str) -> DeviceProfile:
+    """Load a device profile from JSON file using Pydantic."""
+    with open(device_path, "r") as f:
+        data = json.load(f)
+    return DeviceProfile.model_validate(data)
+
+
+def load_model_profile(model_path: str) -> ModelProfile:
+    """
+    Load a model profile from JSON file using Pydantic.
+
+    Handles both ModelProfile (scalar format) and ModelProfileSplit (array format).
+    For ModelProfileSplit, extracts scalar values from arrays for solver use.
+    """
+    with open(model_path, "r") as f:
+        data = json.load(f)
+
+    # Check if it's ModelProfileSplit format (has "prefill" and "decode" keys in f_q)
+    if "f_q" in data and isinstance(data.get("f_q"), dict):
+        if "prefill" in data["f_q"] and "decode" in data["f_q"]:
+            # ModelProfileSplit format - extract scalars from decode phase
+            profile_split = ModelProfileSplit.model_validate(data)
+
+            # Extract scalar values from arrays (use layer index 1 for typical layer)
+            b_layer = profile_split.b[1] if len(profile_split.b) > 1 else 0
+            b_in = profile_split.b_i[1] if len(profile_split.b_i) > 1 else 0
+            b_out = profile_split.b_o[1] if len(profile_split.b_o) > 1 else 0
+
+            # Extract f_q from decode phase arrays
+            f_q_decode = profile_split.f_q["decode"]
+            f_q = {}
+            for batch_key, values in f_q_decode.items():
+                if isinstance(values, list) and len(values) > 1:
+                    f_q[batch_key] = values[1]  # Use layer 1 value
+
+            # Extract f_out from decode phase
+            f_out = profile_split.f_out["decode"]
+
+            return ModelProfile(
+                L=profile_split.L,
+                b_layer=b_layer,
+                b_in=b_in,
+                b_out=b_out,
+                hk=profile_split.hk,
+                ek=profile_split.ek,
+                hv=profile_split.hv,
+                ev=profile_split.ev,
+                n_kv=profile_split.n_kv,
+                e_embed=profile_split.e_embed,
+                V=profile_split.V,
+                f_q=f_q,
+                f_out=f_out,
+                Q=profile_split.quantization,  # type: ignore # coming from string
+                quantization=profile_split.quantization,
+                # MoE fields
+                is_moe=profile_split.is_moe,
+                n_routed_experts=profile_split.n_routed_experts,
+                n_shared_experts=profile_split.n_shared_experts,
+                experts_per_token=profile_split.experts_per_token,
+                moe_intermediate_size=profile_split.moe_intermediate_size,
+                moe_layer_freq=profile_split.moe_layer_freq,
+                first_k_dense_replace=profile_split.first_k_dense_replace,
+                total_moe_layers=profile_split.total_moe_layers,
+                moe_layer_indices=profile_split.moe_layer_indices,
+                attn_bytes=profile_split.attn_bytes,
+                bytes_per_expert=profile_split.bytes_per_expert,
+                bytes_shared_experts=profile_split.bytes_shared_experts,
+                attn_flops=profile_split.attn_flops["decode"],
+                flops_per_expert=profile_split.flops_per_expert,
+                flops_shared_experts=profile_split.flops_shared_experts,
+                router_flops=profile_split.router_flops,
+                router_bytes=profile_split.router_bytes,
+                flops_per_active_expert_per_token=profile_split.flops_per_active_expert_per_token,
+            )
+
+    # Direct ModelProfile format
+    return ModelProfile.model_validate(data)
+
+
+def load_devices_and_model(device_files: list[str], model_file: str):
+    """Load multiple device profiles and a model profile."""
+    devices = []
+    for i, device_file in enumerate(device_files):
+        device = load_device_profile(device_file)
+        # Ensure first device is marked as head
+        if i == 0:
+            device.is_head = True
+        devices.append(device)
+
+    model = load_model_profile(model_file)
+    return devices, model
+
+
+def load_from_profile_folder(profile_path: str):
+    """
+    Load devices and model from a profile folder.
+
+    The folder should contain:
+    - model_profile.json: The model profile
+    - Any other .json files: Device profiles
+    """
+    profile_dir = Path(profile_path)
+    if not profile_dir.exists():
+        # Try with 'test/profiles' prefix if not found
+        profile_dir = Path("test/profiles") / profile_path
+        if not profile_dir.exists():
+            raise FileNotFoundError(f"Profile folder not found: {profile_path}")
+
+    # Find model profile
+    model_file = profile_dir / "model_profile.json"
+    if not model_file.exists():
+        raise FileNotFoundError(f"model_profile.json not found in {profile_dir}")
+
+    # Find and load all device profiles
+    device_files = [str(f) for f in profile_dir.glob("*.json") if f.name != "model_profile.json"]
+
+    if not device_files:
+        raise ValueError(f"No device profiles found in {profile_dir}")
+
+    # Sort device files for consistent ordering
+    device_files.sort()
+
+    return load_devices_and_model(device_files, str(model_file))
 
 
 def main() -> int:
@@ -49,17 +172,13 @@ Examples:
 
     # Input options
     input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
-        "--devices", nargs="+", help="Device profile JSON files (requires --model)"
-    )
+    input_group.add_argument("--devices", nargs="+", help="Device profile JSON files (requires --model)")
     input_group.add_argument(
         "--profile",
         help="Profile folder path (e.g., 'hermes_70b' or 'profiles/hermes_70b')",
     )
 
-    parser.add_argument(
-        "--model", help="Model profile JSON file (required with --devices)"
-    )
+    parser.add_argument("--model", help="Model profile JSON file (required with --devices)")
 
     # Solver parameters
     solver_group = parser.add_argument_group("solver parameters")
@@ -75,9 +194,7 @@ Examples:
         default=50,
         help="Maximum outer iterations (default: 50)",
     )
-    solver_group.add_argument(
-        "--mip-gap", type=float, default=1e-4, help="MIP gap tolerance (default: 1e-4)"
-    )
+    solver_group.add_argument("--mip-gap", type=float, default=1e-4, help="MIP gap tolerance (default: 1e-4)")
     solver_group.add_argument(
         "--sdisk-threshold",
         type=float,
@@ -121,9 +238,7 @@ Examples:
         if args.devices and not args.model:
             parser.error("--devices requires --model")
         else:
-            parser.error(
-                "Either --profile or both --devices and --model must be provided."
-            )
+            parser.error("Either --profile or both --devices and --model must be provided.")
     # Print summaries if verbose
     if args.verbose:
         print(f"\n{'=' * 60}")
@@ -144,9 +259,7 @@ Examples:
         print("Running HALDA solver...")
         print(f"{'=' * 60}")
 
-    result = halda_solve(
-        devices, model, mip_gap=args.mip_gap, plot=not args.no_plot, kv_bits="4bit"
-    )
+    result = halda_solve(devices, model, mip_gap=args.mip_gap, plot=not args.no_plot, kv_bits="4bit")
 
     # Print solution
     if args.quiet:
@@ -162,14 +275,8 @@ Examples:
         solution_data = {
             "k": result.k,
             "objective_value": result.obj_value,
-            "layer_distribution": {
-                dev.name: {"w": wi, "n": ni}
-                for dev, wi, ni in zip(devices, result.w, result.n)
-            },
-            "sets": {
-                set_name: [devices[i].name for i in indices]
-                for set_name, indices in result.sets.items()
-            },
+            "layer_distribution": {dev.name: {"w": wi, "n": ni} for dev, wi, ni in zip(devices, result.w, result.n)},
+            "sets": {set_name: [devices[i].name for i in indices] for set_name, indices in result.sets.items()},
         }
 
         with open(args.save_solution, "w") as f:

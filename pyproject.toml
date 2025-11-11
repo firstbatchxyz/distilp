@@ -33,6 +33,7 @@ dev = [
   "py-cpuinfo>=9.0.0",
   "mlx==0.29.2",
   "mlx-lm==0.28.2",
+  "pytest>=8.0.0",
 ] # Development installation includes all optional dependencies
 
 # torch = ["torch>=2.0.0", "transformers>=4.30.0"]

@@ -1,24 +1,20 @@
-from .device import DeviceProfile, DeviceProfileInfo
+from typing import Literal
+from .device import DeviceProfile
 from .model import (
     ModelProfile,
-    ModelProfileInfo,
     ModelProfilePhased,
     ModelProfileSplit,
-    MoEModelProfileInfo,
 )
-from .types import QuantizationType
 
+type QuantizationLevel = Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"]
 
 __all__ = [
     # devices
     "DeviceProfile",
-    "DeviceProfileInfo",
     # models
     "ModelProfile",
-    "ModelProfileInfo",
     "ModelProfilePhased",
     "ModelProfileSplit",
-    "MoEModelProfileInfo",
     # types
-    "QuantizationType",
+    "QuantizationLevel",
 ]
