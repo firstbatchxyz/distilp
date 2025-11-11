@@ -6,7 +6,8 @@ from __future__ import annotations
 from typing import Dict, Literal, Optional, List
 from pydantic import BaseModel, Field
 
-type QuantizationLevel = Literal["Q4_K", "Q5_K", "Q6_K", "Q8_0", "BF16", "F16", "F32"]
+from . import QuantizationLevel
+
 type ModelPhase = Literal["merged", "prefill", "decode"]
 
 

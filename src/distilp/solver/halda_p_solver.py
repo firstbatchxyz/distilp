@@ -53,9 +53,7 @@ def _kv_bits_to_factor(kv_bits: str) -> float:
         return 1.0
     if s in ("fp16", "bf16"):
         return 2.0
-    raise ValueError(
-        f"Unsupported kv_bits '{kv_bits}'. Use one of: 4bit, 8bit, fp16, bf16"
-    )
+    raise ValueError(f"Unsupported kv_bits '{kv_bits}'. Use one of: 4bit, 8bit, fp16, bf16")
 
 
 def solve_fixed_k_milp(
@@ -353,12 +351,7 @@ def solve_fixed_k_milp(
 
     # Full objective value with constants
     linear_val = float(c_obj.dot(x))
-    obj_value = (
-        linear_val
-        + total_inter_comm_time_per_round
-        + sum(float(ci) for ci in c_vec)
-        + kappa
-    )
+    obj_value = linear_val + total_inter_comm_time_per_round + sum(float(ci) for ci in c_vec) + kappa
 
     # Optional: print only non-zero decision variables
     # for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
