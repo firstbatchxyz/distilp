@@ -8,7 +8,8 @@ from .profiler.model import (
     MoEModelProfileInfo,
 )
 from .datatypes import DeviceInfo
-from .api import load_config_from_repo, profile_model, profile_device
+from .api import profile_model, profile_device
+from .models import load_config_from_repo
 
 __all__ = [
     # High-level API (recommended)

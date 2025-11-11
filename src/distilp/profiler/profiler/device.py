@@ -12,6 +12,8 @@ import fcntl
 import mlx.core as mx
 from typing import Any, Callable
 
+from distilp.profiler.models import MLX_ModelArgs
+
 from ..datatypes import DeviceInfo
 from ...common import (
     DeviceProfileInfo,
@@ -572,7 +574,7 @@ def profile(config, max_batch_exp, debug) -> DeviceInfo:
 
 
 # Get device information in solver variable names
-def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfileInfo:
+def profile_device(config: MLX_ModelArgs, debug, max_batch_exp=6, is_head=True) -> DeviceProfileInfo:
     """
     Profile the device and return device-specific information.
 
@@ -659,10 +661,10 @@ def profile_device(config, debug, max_batch_exp=6, is_head=True) -> DeviceProfil
     kv_payload_size = 0
     if hasattr(config, "num_attention_heads"):
         if hasattr(config, "num_key_value_heads"):
-            head_dim = config.hidden_size // config.num_attention_heads
-            kv_payload_size += 2 * head_dim * config.num_key_value_heads * mx.float16.size
+            head_dim = config.head_dim()
+            kv_payload_size += 2 * head_dim * config.num_key_value_heads() * mx.float16.size
         else:
-            kv_payload_size += 2 * config.hidden_size * mx.float16.size
+            kv_payload_size += 2 * config.hidden_size() * mx.float16.size
 
     # Use cold CPU write bandwidth
     ret.t_kvcpy_cpu = kv_payload_size / device_info.memory.cpu_write_cold_bw  # s/layer
