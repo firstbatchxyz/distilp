@@ -12,6 +12,7 @@ from ...common import (
     ModelProfileSplit,
     ModelProfilePhased,
 )
+from ...common.model import QuantizationLevel
 from ..models import MLX_ModelArgs
 
 type ModelPhase = Literal["merged", "prefill", "decode"]
@@ -841,6 +842,7 @@ def profile_model(
     return ret
 
 
+# FIXME: this was a mega ai slop, it is not a smaller slop
 def parse_quantization_info(cfg: MLX_ModelArgs):
     """
     Parse quantization information from the model config.
@@ -872,8 +874,6 @@ def parse_quantization_info(cfg: MLX_ModelArgs):
     # if bits is still 0, try to infer from dtype or quant_method
     if bits == 0:
         dtype = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
-        if not dtype and isinstance(cfg.raw.get("quantization_config"), dict):
-            quant_method = cfg.raw["quantization_config"].get("quant_method") or quant_method
         if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
             bits = 4
             if group_size == 0:
@@ -885,49 +885,37 @@ def parse_quantization_info(cfg: MLX_ModelArgs):
                 bits = 16
             elif dtype in ("float32", "f32"):
                 bits = 32
+
+        # default to fp16
         if bits == 0:
-            bits = 16  # default to fp16
+            bits = 16
 
+    # Determine fp_bits for non-quantized layers
     fp_bits = 16
-    if has_quant_cfg:
-        d_dtype = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
-        if d_dtype in ("float32", "f32"):
-            fp_bits = 32
-        elif d_dtype in ("bfloat16", "bf16", "float16", "fp16"):
-            fp_bits = 16
-        else:
-            # Default to fp16 when dtype is missing
-            fp_bits = 16
+    d_dtype = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
+    if d_dtype in ("float32", "f32"):
+        fp_bits = 32
+    elif d_dtype in ("bfloat16", "bf16", "float16", "fp16"):
+        fp_bits = 16
+    else:
+        fp_bits = 16  # default
 
-    # Add quantization label
-    # If no explicit quantization, default label to F16
+    # add label
     q_label = ""
-    if isinstance(cfg.raw.get("quantization"), dict) or isinstance(cfg.raw.get("quantization_config"), dict):
-        qbits = None
-        if isinstance(cfg.raw.get("quantization"), dict):
-            qbits = cfg.raw.get("quantization", {}).get("bits")
+    mapping: dict[int, QuantizationLevel] = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 32: "F32"}
+    if bits in mapping:
+        q_label = mapping[bits]
+    elif bits == 16:
+        # For 16-bit, check dtype to distinguish BF16 vs FP16
+        d = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
+        if d in ("bfloat16", "bf16"):
+            q_label = "BF16"
         else:
-            qbits = cfg.raw.get("quantization_config", {}).get("bits")
-            quant_method = cfg.raw.get("quantization_config", {}).get("quant_method")
+            q_label = "F16"  # Default to FP16 for 16-bit
 
-        try:
-            qbits = int(qbits) if qbits is not None else None
-        except Exception:
-            qbits = None
-        if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
-            q_label = "MXFP4"
-
-        mapping = {4: "Q4_K", 5: "Q5_K", 6: "Q6_K", 8: "Q8_0", 16: "F16", 32: "F32"}
-        if qbits in mapping:
-            q_label = mapping[qbits]
-        if not q_label:
-            d = cfg.raw.get("torch_dtype") or cfg.raw.get("dtype")
-            if d in ("bfloat16", "bf16"):
-                q_label = "BF16"
-            elif d in ("float16", "fp16"):
-                q_label = "F16"
-            elif d in ("float32", "f32"):
-                q_label = "F32"
+        # FIXME: we can detect this, but the solver is not expecting it?
+        # if quant_method in ("mxfp4", "MXFP4", "mx_fp4"):
+        #     q_label = "MXFP4"
     else:
         q_label = "F16"
 
