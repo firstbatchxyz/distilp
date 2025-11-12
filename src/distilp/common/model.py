@@ -3,7 +3,7 @@ Data classes for HALDA solver profiles.
 """
 
 from __future__ import annotations
-from typing import Dict, Optional, List
+from typing import Dict, Literal, Optional, List
 from pydantic import BaseModel, Field
 
 from .types import QuantizationLevel, ModelPhase
@@ -115,6 +115,23 @@ class ModelProfilePhased(BaseModel):
     prefill: ModelProfile
     decode: ModelProfile
 
+    def to_model_profile(self, phase: Literal["decode", "prefill"] = "decode") -> ModelProfile:
+        """
+        Extract ModelProfile for the specified phase.
+
+        Args:
+            phase: "decode" or "prefill"
+
+        Returns:
+            ModelProfile for the specified phase.
+        """
+        if phase == "decode":
+            return self.decode
+        elif phase == "prefill":
+            return self.prefill
+        else:
+            raise ValueError(f"Invalid phase: {phase}. Must be 'decode' or 'prefill'.")
+
 
 class ModelProfileSplit(BaseModel):
     """
@@ -173,7 +190,7 @@ class ModelProfileSplit(BaseModel):
     router_bytes: Dict[int, int] = Field(default_factory=dict)
     flops_per_active_expert_per_token: Dict[int, float] = Field(default_factory=dict)
 
-    def to_model_profile(self) -> ModelProfile:
+    def to_model_profile(self, phase: Literal["decode", "prefill"] = "decode") -> ModelProfile:
         """
         Convert ModelProfileSplit to ModelProfile by extracting scalar values from
         decode phase.
@@ -187,16 +204,15 @@ class ModelProfileSplit(BaseModel):
         b_out = self.b_o[1] if len(self.b_o) > 1 else 0
 
         # Extract f_q from decode phase arrays
-        f_q_decode = self.f_q["decode"]
+        f_q_decode = self.f_q[phase]
         f_q = {}
         for batch_key, values in f_q_decode.items():
             if isinstance(values, list) and len(values) > 1:
                 f_q[batch_key] = values[1]  # Use layer 1 value
 
         # Extract f_out from decode phase
-        f_out = self.f_out["decode"]
+        f_out = self.f_out[phase]
 
-        print(self)
         return ModelProfile(
             L=self.L,
             b_layer=b_layer,
@@ -226,7 +242,7 @@ class ModelProfileSplit(BaseModel):
             attn_bytes=self.attn_bytes,
             bytes_per_expert=self.bytes_per_expert,
             bytes_shared_experts=self.bytes_shared_experts,
-            attn_flops=self.attn_flops.get("decode", {}),  # decode phase only if exists
+            attn_flops=self.attn_flops.get(phase, {}),
             flops_per_expert=self.flops_per_expert,
             flops_shared_experts=self.flops_shared_experts,
             router_flops=self.router_flops,

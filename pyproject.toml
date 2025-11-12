@@ -1,6 +1,6 @@
 [project]
 name = "distilp"
-version = "0.1.4"
+version = "0.1.5"
 description = "distilp: A Python library for MILP-based layer/expert assignment for distributed inference across heterogeneous devices"
 authors = [
   { name = "andthattoo", email = "omer@dria.co" },
