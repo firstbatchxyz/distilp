@@ -41,7 +41,6 @@ def profile_model(
         batch_sizes = [1, 2, 4, 8]
 
     # Load configuration and resolve module name
-    # config_obj, config_dict, module_name_final = load_config_from_repo(repo_id, model_name)
     config = load_config_from_repo(repo_id)
 
     # Profile the model
@@ -66,7 +65,6 @@ def profile_device(
 
     Args:
         repo_id: HuggingFace repository ID (e.g., 'Qwen/Qwen3-4B-MLX-8bit')
-        model_name: Optional MLX model name. If not provided, will be inferred.
         max_batch_exp: Maximum batch exponent for profiling (default: 6, which is 2^6=64)
         debug: Debug logging level (default: 0)
 

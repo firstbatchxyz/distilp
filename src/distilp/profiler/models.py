@@ -256,7 +256,6 @@ def load_config_from_repo(repo_id: str) -> MLX_ModelArgs:
 
     Args:
         repo_id: HuggingFace repository ID (e.g., 'Qwen/Qwen3-4B-MLX-8bit')
-        model_name: Optional MLX model name. If not provided, will be inferred.
 
     Returns:
         Tuple of (config_obj, config_dict, module_name)
@@ -282,10 +281,7 @@ def load_config_from_repo(repo_id: str) -> MLX_ModelArgs:
             }
         )
     except ImportError as e:
-        raise ImportError(
-            f"Model '{module_name}' not found in mlx_lm registry. "
-            f"Ensure the HF repo is MLX-compatible or pass a supported model_name. Error: {e}"
-        )
+        raise ImportError(f"Model '{module_name}' not found in mlx_lm registry. ") from e
 
 
 def _resolve_module_from_config(config_dict: Dict[str, Any]) -> str:
@@ -296,25 +292,16 @@ def _resolve_module_from_config(config_dict: Dict[str, Any]) -> str:
     # get model type from config
     mt: str | None = config_dict.get("model_type")
     if not mt:
-        raise ValueError(
-            "config.json is missing 'model_type'; repo may not be MLX-formatted. "
-            "Pass model_name explicitly to override."
-        )
+        raise ValueError("config.json is missing 'model_type'; repo may not be MLX-formatted. ")
 
     # get corresponding module name
     module_name: MODEL_ARCHS | None = _MODEL_TYPE_ALIASES.get(mt.strip().replace(" ", "").lower(), None)
     if not module_name:
-        raise ValueError(
-            f"Unsupported or unknown model_type '{mt}' for MLX. "
-            f"Ensure this repo targets mlx_lm or pass model_name explicitly."
-        )
+        raise ValueError(f"Unsupported or unknown model_type '{mt}' for MLX. ")
 
     # Validate importability early for better error messages
     try:
         importlib.import_module(f"mlx_lm.models.{module_name}")
     except Exception as e:
-        raise ImportError(
-            f"Unsupported or unknown model_type '{mt}' for MLX (resolved to '{module_name}'). "
-            f"Ensure this repo targets mlx_lm or pass model_name explicitly. Error: {e}"
-        )
+        raise ImportError(f"Unsupported or unknown model_type '{mt}' for MLX (resolved to '{module_name}'). ") from e
     return module_name
