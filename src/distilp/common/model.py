@@ -56,7 +56,7 @@ class ModelProfile(BaseModel):
 
     # --- Profiler metadata ---
     seq_len: int = 0  # sequence length used during profiling
-    quantization: str = ""  # quantization label from profiler (may differ from Q)
+    quantization: QuantizationLevel = "F16"  # quantization label from profiler (may differ from Q)
 
     # --- MoE (Mixture of Experts) configuration ---
     is_moe: bool = False  # Whether model uses Mixture of Experts
@@ -149,7 +149,7 @@ class ModelProfileSplit(BaseModel):
     # Phase-split FLOPs: {"prefill": {"b_1": [flops per layer], ...}, "decode": {...}}
     f_q: Dict[ModelPhase, Dict[str, List[float]]]  # phase -> batch_size -> [FLOPs per layer]
     f_out: Dict[ModelPhase, Dict[str, float]]  # phase -> batch_size -> output layer FLOPs
-    quantization: str  # quantization label (e.g., "Q4_K", "F16")
+    quantization: QuantizationLevel  # quantization label (e.g., "Q4_K", "F16")
 
     # MoE fields (optional, populated only for MoE models)
     is_moe: bool = False
@@ -172,3 +172,64 @@ class ModelProfileSplit(BaseModel):
     router_flops: Dict[int, float] = Field(default_factory=dict)
     router_bytes: Dict[int, int] = Field(default_factory=dict)
     flops_per_active_expert_per_token: Dict[int, float] = Field(default_factory=dict)
+
+    def to_model_profile(self) -> ModelProfile:
+        """
+        Convert ModelProfileSplit to ModelProfile by extracting scalar values from
+        decode phase.
+
+        Returns:
+            ModelProfile object with scalar fields populated.
+        """
+        # Extract scalar values from arrays (use layer index 1 for typical layer)
+        b_layer = self.b[1] if len(self.b) > 1 else 0
+        b_in = self.b_i[1] if len(self.b_i) > 1 else 0
+        b_out = self.b_o[1] if len(self.b_o) > 1 else 0
+
+        # Extract f_q from decode phase arrays
+        f_q_decode = self.f_q["decode"]
+        f_q = {}
+        for batch_key, values in f_q_decode.items():
+            if isinstance(values, list) and len(values) > 1:
+                f_q[batch_key] = values[1]  # Use layer 1 value
+
+        # Extract f_out from decode phase
+        f_out = self.f_out["decode"]
+
+        print(self)
+        return ModelProfile(
+            L=self.L,
+            b_layer=b_layer,
+            b_in=b_in,
+            b_out=b_out,
+            hk=self.hk,
+            ek=self.ek,
+            hv=self.hv,
+            ev=self.ev,
+            n_kv=self.n_kv,
+            e_embed=self.e_embed,
+            V=self.V,
+            f_q=f_q,
+            f_out=f_out,
+            Q=self.quantization,
+            quantization=self.quantization,
+            # MoE fields
+            is_moe=self.is_moe,
+            n_routed_experts=self.n_routed_experts,
+            n_shared_experts=self.n_shared_experts,
+            experts_per_token=self.experts_per_token,
+            moe_intermediate_size=self.moe_intermediate_size,
+            moe_layer_freq=self.moe_layer_freq,
+            first_k_dense_replace=self.first_k_dense_replace,
+            total_moe_layers=self.total_moe_layers,
+            moe_layer_indices=self.moe_layer_indices,
+            attn_bytes=self.attn_bytes,
+            bytes_per_expert=self.bytes_per_expert,
+            bytes_shared_experts=self.bytes_shared_experts,
+            attn_flops=self.attn_flops.get("decode", {}),  # decode phase only if exists
+            flops_per_expert=self.flops_per_expert,
+            flops_shared_experts=self.flops_shared_experts,
+            router_flops=self.router_flops,
+            router_bytes=self.router_bytes,
+            flops_per_active_expert_per_token=self.flops_per_active_expert_per_token,
+        )

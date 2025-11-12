@@ -34,58 +34,7 @@ def load_model_profile(model_path: str) -> ModelProfile:
         if "prefill" in data["f_q"] and "decode" in data["f_q"]:
             # ModelProfileSplit format - extract scalars from decode phase
             profile_split = ModelProfileSplit.model_validate(data)
-
-            # Extract scalar values from arrays (use layer index 1 for typical layer)
-            b_layer = profile_split.b[1] if len(profile_split.b) > 1 else 0
-            b_in = profile_split.b_i[1] if len(profile_split.b_i) > 1 else 0
-            b_out = profile_split.b_o[1] if len(profile_split.b_o) > 1 else 0
-
-            # Extract f_q from decode phase arrays
-            f_q_decode = profile_split.f_q["decode"]
-            f_q = {}
-            for batch_key, values in f_q_decode.items():
-                if isinstance(values, list) and len(values) > 1:
-                    f_q[batch_key] = values[1]  # Use layer 1 value
-
-            # Extract f_out from decode phase
-            f_out = profile_split.f_out["decode"]
-
-            return ModelProfile(
-                L=profile_split.L,
-                b_layer=b_layer,
-                b_in=b_in,
-                b_out=b_out,
-                hk=profile_split.hk,
-                ek=profile_split.ek,
-                hv=profile_split.hv,
-                ev=profile_split.ev,
-                n_kv=profile_split.n_kv,
-                e_embed=profile_split.e_embed,
-                V=profile_split.V,
-                f_q=f_q,
-                f_out=f_out,
-                Q=profile_split.quantization,  # type: ignore # coming from string
-                quantization=profile_split.quantization,
-                # MoE fields
-                is_moe=profile_split.is_moe,
-                n_routed_experts=profile_split.n_routed_experts,
-                n_shared_experts=profile_split.n_shared_experts,
-                experts_per_token=profile_split.experts_per_token,
-                moe_intermediate_size=profile_split.moe_intermediate_size,
-                moe_layer_freq=profile_split.moe_layer_freq,
-                first_k_dense_replace=profile_split.first_k_dense_replace,
-                total_moe_layers=profile_split.total_moe_layers,
-                moe_layer_indices=profile_split.moe_layer_indices,
-                attn_bytes=profile_split.attn_bytes,
-                bytes_per_expert=profile_split.bytes_per_expert,
-                bytes_shared_experts=profile_split.bytes_shared_experts,
-                attn_flops=profile_split.attn_flops["decode"],
-                flops_per_expert=profile_split.flops_per_expert,
-                flops_shared_experts=profile_split.flops_shared_experts,
-                router_flops=profile_split.router_flops,
-                router_bytes=profile_split.router_bytes,
-                flops_per_active_expert_per_token=profile_split.flops_per_active_expert_per_token,
-            )
+            return profile_split.to_model_profile()
 
     # Direct ModelProfile format
     return ModelProfile.model_validate(data)

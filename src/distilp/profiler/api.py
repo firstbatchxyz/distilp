@@ -1,6 +1,6 @@
 """High-level API for profiling models using HF config.model_type."""
 
-from typing import List, Optional
+from typing import List
 
 
 from .profiler.model import profile_model_split
@@ -11,7 +11,7 @@ from .models import load_config_from_repo
 
 def profile_model(
     repo_id: str,
-    batch_sizes: Optional[List[int]] = None,
+    batch_sizes: List[int] = [1, 2, 4, 8],
     sequence_length: int = 512,
     debug: int = 0,
 ) -> ModelProfileSplit:
@@ -36,10 +36,6 @@ def profile_model(
         ... )
         >>> print(result)
     """
-    # Set default batch sizes if not provided
-    if batch_sizes is None:
-        batch_sizes = [1, 2, 4, 8]
-
     # Load configuration and resolve module name
     config = load_config_from_repo(repo_id)
 
