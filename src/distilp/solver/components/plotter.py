@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 from typing import List, Optional, Tuple
 
 
@@ -14,7 +13,9 @@ def plot_k_curve(
     - k_star: optional vertical marker for the chosen k*
     - save_path: if provided, saves a PNG instead of (or in addition to) showing it
     """
-    if plt is None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
         print("matplotlib not available; skipping plot.")
         return
 
@@ -35,6 +36,7 @@ def plot_k_curve(
     plt.title(title)
     # plt.grid(True)
 
+    # TODO: enable this
     # if k_star is not None:
     #     plt.axvline(k_star, linestyle="--")
     #     # Mark the point if it exists among the plotted ks
