@@ -70,7 +70,14 @@ def solve_fixed_k_milp(
 
     idx_C = 7 * M  # scalar index for cycle time
 
-    Nvars = 7 * M + 1
+    # NEW (UMa/M2 only): binary gate y_i and fetched layers per round f_i
+    def idx_y(i):
+        return 7 * M + 1 + i  # 1 => does NOT fit resident (prefetch every round), 0 => fits resident (no prefetch)
+
+    def idx_f(i):
+        return 8 * M + 1 + i  # fetched layers per round; equals w_i if y_i=1 else 0
+
+    Nvars = 9 * M + 1
 
     # ----------------------------
     # Bounds & integrality
@@ -121,6 +128,12 @@ def solve_fixed_k_milp(
 
         total_inter_comm_time_per_round += d.t_comm
 
+        # UMa/M2 gate & fetched layers (applies to all i; only used for M2)
+        lb[idx_y(i)] = 0
+        ub[idx_y(i)] = 1
+        lb[idx_f(i)] = 0.0
+        ub[idx_f(i)] = W
+
     # NEW: bounds for stall z_i and cycle time C
     for i in range(M):
         lb[idx_z(i)] = 0.0
@@ -135,6 +148,9 @@ def solve_fixed_k_milp(
     for i in range(M):
         integrality[idx_z(i)] = 0
     integrality[idx_C] = 0
+    # Also make f_i continuous (y_i stays integer/binary)
+    for i in range(M):
+        integrality[idx_f(i)] = 0
 
     # ----------------------------
     # Constraints
@@ -178,6 +194,11 @@ def solve_fixed_k_milp(
         row += c_vec[i]
         row[idx_w(i)] = float(a[i])   # sec/layer including comms
         row[idx_n(i)] = float(b[i])   # (can be negative) GPU delta
+
+        # For intra-device fetching, i.e., fetching during the window compute.
+        # For example, if the w_i = 9 but the RAMCap_i = 8 layers,
+        # then the device can fetch 1 extra layer while the other 8 are being computed at the cost of disk-read time.
+        # This applies to all devices' RAM and VRAM.
         row[idx_s1(i)] = float(penM1)
         row[idx_s2(i)] = float(penM2)
         row[idx_s3(i)] = float(penM3)
@@ -185,12 +206,15 @@ def solve_fixed_k_milp(
         return row
 
     def fetch_row_for(i: int) -> np.ndarray:
-        # F_i = w_i * (bprime / s_disk_i)
+        # For UMa/M2: F_i = (bprime / s_disk_i) * f_i (all-or-nothing prefetch each round)
+        # For others: F_i = (bprime / s_disk_i) * w_i (unchanged)
         s_disk_i = max(1.0, float(devs[i].s_disk))
         coef = bprime / s_disk_i
         row = np.zeros(Nvars)
-        row[idx_w(i)] = coef
-
+        if i in sets.get("M2", []):
+            row[idx_f(i)] = coef
+        else:
+            row[idx_w(i)] = coef
         return row
 
     # M1: b' * w_i <= d_avail_ram - bcio + b' * s1_i
@@ -211,6 +235,39 @@ def solve_fixed_k_milp(
         row[idx_s2(i)] = -bprime
         A_ub.append(row)
         b_ub.append(rhs_cap)
+
+        # --- UMa/M2 all-or-nothing prefetch gate ---
+        # If y_i = 0: (bprime * k) * w_i <= rhs_bytes  (all k windows fit resident => no prefetch)
+        # If y_i = 1: constraint relaxed and we prefetch every round
+        BIGM_w = float(W)  # layers-based big-M (tight: max w_i)
+        rhs_bytes = rhs_cap  # same cap as above, in bytes
+
+        # Capacity gate: (bprime * k) * w_i <= rhs_bytes + (bprime * k * W) * y_i
+        row = np.zeros(Nvars)
+        row[idx_w(i)] = bprime * float(k)
+        row[idx_y(i)] = -(bprime * float(k) * float(W))
+        A_ub.append(row)
+        b_ub.append(rhs_bytes)
+
+        # Linearize f_i = w_i * y_i
+        # (a) f_i <= w_i
+        row = np.zeros(Nvars)
+        row[idx_f(i)] = 1.0
+        row[idx_w(i)] = -1.0
+        A_ub.append(row); b_ub.append(0.0)
+
+        # (b) f_i <= BIGM_w * y_i
+        row = np.zeros(Nvars)
+        row[idx_f(i)] = 1.0
+        row[idx_y(i)] = -BIGM_w
+        A_ub.append(row); b_ub.append(0.0)
+
+        # (c) -f_i + w_i + BIGM_w * y_i <= BIGM_w   (equiv. to f_i >= w_i - BIGM_w*(1 - y_i))
+        row = np.zeros(Nvars)
+        row[idx_f(i)] = -1.0
+        row[idx_w(i)] = 1.0
+        row[idx_y(i)] = BIGM_w
+        A_ub.append(row); b_ub.append(BIGM_w)
 
     # M3: b' * (w_i - n_i) <= d_avail_ram + dswap - bcio + b' * s3_i
     for i in sets.get("M3", []):
@@ -277,11 +334,14 @@ def solve_fixed_k_milp(
     # Objective: minimize cycle time C + penalties
     # ----------------------------
     c_obj = np.zeros(Nvars)
-    # Minimize k * C (steady-state cycle time scaled by k)
+    # Minimize k-1 * C (steady-state cycle time scaled by k-1)
     c_obj[idx_C] = float(k-1)
 
     for i in range(M):
-        # No direct cost on w_i or n_i; they influence objective via C through constraints
+        # No direct cost for each round on w_i, n_i, s1_i,..,s3_i or t_i;
+        # they influence objective via C through constraints, except the first round.
+        # Hence, they are kept for only the first round.
+
         c_obj[idx_w(i)] = float(a[i])
         c_obj[idx_n(i)] = float(b[i])
 
