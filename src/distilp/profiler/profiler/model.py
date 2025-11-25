@@ -488,37 +488,37 @@ def in_profile_model(
                         # config = cfg.raw
                         if any(cfg.raw.get(k) is not None for k in ["kv_lora_rank", "v_head_dim"]):
                             # Q projections, flops and bytes
-                            q_head_dim = cfg.raw["qk_nope_head_dim"] + cfg.raw["qk_rope_head_dim"]
-                            q_a_proj = 2 * tokens * cfg.hidden_size() * cfg.raw["q_lora_rank"]
-                            q_b_proj = 2 * tokens * cfg.num_attention_heads() * q_head_dim * cfg.raw["q_lora_rank"]
-                            q_a_proj_n = cfg.raw["q_lora_rank"] * cfg.hidden_size()
-                            q_b_proj_n = cfg.num_attention_heads() * q_head_dim * cfg.raw["q_lora_rank"]
+                            q_head_dim = cfg.qk_nope_head_dim() + cfg.qk_rope_head_dim()
+                            q_a_proj = 2 * tokens * cfg.hidden_size() * cfg.q_lora_rank()
+                            q_b_proj = 2 * tokens * cfg.num_attention_heads() * q_head_dim * cfg.q_lora_rank()
+                            q_a_proj_n = cfg.q_lora_rank() * cfg.hidden_size()
+                            q_b_proj_n = cfg.num_attention_heads() * q_head_dim * cfg.q_lora_rank()
                             # KV projections
                             if is_gqa:
                                 pass  # TODO
                             else:
-                                out_features = cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"]
+                                out_features = cfg.kv_lora_rank() + cfg.qk_rope_head_dim()
                                 kv_a_proj_with_mqa = (
                                     2
                                     * tokens
-                                    * (cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"])
+                                    * (cfg.kv_lora_rank() + cfg.qk_rope_head_dim())
                                     * cfg.hidden_size()
                                 )
                                 kv_b_proj = (
                                     2
                                     * tokens
-                                    * cfg.raw["kv_lora_rank"]
+                                    * cfg.kv_lora_rank()
                                     * cfg.num_attention_heads()
-                                    * (cfg.raw["qk_nope_head_dim"] + cfg.raw["v_head_dim"])
+                                    * (cfg.qk_nope_head_dim() + cfg.v_head_dim())
                                 )
                                 kv_a_proj_n = out_features * cfg.hidden_size()
-                                kv_b_proj_n = out_features * cfg.raw["kv_lora_rank"]
+                                kv_b_proj_n = out_features * cfg.kv_lora_rank()
 
                             # O projection
-                            o_proj = 2 * tokens * cfg.num_attention_heads() * cfg.raw["v_head_dim"] * cfg.hidden_size()
-                            o_proj_n = cfg.hidden_size() * cfg.num_attention_heads() * cfg.raw["v_head_dim"]
+                            o_proj = 2 * tokens * cfg.num_attention_heads() * cfg.v_head_dim() * cfg.hidden_size()
+                            o_proj_n = cfg.hidden_size() * cfg.num_attention_heads() * cfg.v_head_dim()
                             # KV Cache I/O
-                            kv_elems = cfg.raw["kv_lora_rank"] + cfg.raw["qk_rope_head_dim"]
+                            kv_elems = cfg.kv_lora_rank() + cfg.qk_rope_head_dim()
                             if phase == "prefill":
                                 lm.kv_cache_w = (B * L * kv_elems * a_bits) / 8
                                 lm.kv_cache_r = 0

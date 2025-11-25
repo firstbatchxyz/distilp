@@ -13,6 +13,7 @@ import mlx_lm.models.qwen2_moe as QWEN2_MOE
 import mlx_lm.models.qwen3 as QWEN3
 import mlx_lm.models.qwen3_moe as QWEN3_MOE
 import mlx_lm.models.gemma2 as GEMMA2
+import mlx_lm.models.deepseek_v3 as DEEPSEEK_V3
 
 
 # import mlx_lm.models.deepseek_v2 as DEEPSEEK_V2
@@ -29,6 +30,7 @@ type MODEL_ARCHS = Literal[
     "gemma2",
     "phi3",
     "gpt_oss",
+    "deepseek_v3",
 ]
 
 
@@ -57,6 +59,8 @@ _MODEL_TYPE_ALIASES: Dict[str, MODEL_ARCHS] = {
     "phi3": "phi3",
     # GPT-OSS
     "gpt_oss": "gpt_oss",
+    "deepseek_v3": "deepseek_v3",
+    "deepseek-v3": "deepseek_v3",
 }
 
 
@@ -104,6 +108,10 @@ class _MLX_ModelArgs_GEMMA2(BaseModel):
     module_name: Literal["gemma2"]
     args: GEMMA2.ModelArgs
 
+class _MLX_ModelArgs_DEEPSEEK_V3(BaseModel):
+    module_name: Literal["deepseek_v3"]
+    args: DEEPSEEK_V3.ModelArgs
+
 
 class MLX_ModelArgs(BaseModel):
     """A discriminated union of all supported `mlx_lm` `ModelArgs` types."""
@@ -118,6 +126,7 @@ class MLX_ModelArgs(BaseModel):
         | _MLX_ModelArgs_QWEN3
         | _MLX_ModelArgs_QWEN3_MOE
         | _MLX_ModelArgs_GEMMA2
+        | _MLX_ModelArgs_DEEPSEEK_V3
     ) = Field(discriminator="module_name")
 
     # raw dictionary of original config.json
@@ -142,6 +151,8 @@ class MLX_ModelArgs(BaseModel):
             return QWEN3_MOE.Model(self.module.args)
         elif self.module.module_name == "gemma2":
             return GEMMA2.Model(self.module.args)
+        elif self.module.module_name == "deepseek_v3":
+            return DEEPSEEK_V3.Model(self.module.args)
         else:
             raise ValueError(f"Unsupported module_name: {self.module.module_name}")
 
@@ -164,6 +175,7 @@ class MLX_ModelArgs(BaseModel):
             or self.module.module_name == "qwen2"
             or self.module.module_name == "qwen3"
             or self.module.module_name == "qwen3_moe"
+            or self.module.module_name == "deepseek_v3"
         ):
             return self.module.args.max_position_embeddings
         else:
@@ -176,6 +188,7 @@ class MLX_ModelArgs(BaseModel):
             or self.module.module_name == "mistral"
             or self.module.module_name == "qwen2"
             or self.module.module_name == "qwen2_moe"
+            or self.module.module_name == "deepseek_v3"
         ):
             return self.module.args.hidden_size // self.module.args.num_attention_heads
         else:
@@ -197,6 +210,8 @@ class MLX_ModelArgs(BaseModel):
     def moe_layer_freq(self) -> int:
         if self.module.module_name == "qwen3_moe":
             return self.module.args.decoder_sparse_step
+        elif self.module.module_name == "deepseek_v3":
+            return self.module.args.moe_layer_freq
         else:
             return 1  # indeed defaults to 1
 
@@ -206,6 +221,8 @@ class MLX_ModelArgs(BaseModel):
             return self.module.args.num_experts
         elif self.module.module_name == "mistral" or self.module.module_name == "gpt_oss":
             return self.module.args.num_local_experts
+        elif self.module.module_name == "deepseek_v3":
+            return self.module.args.n_routed_experts
         else:
             return 0
 
@@ -218,7 +235,11 @@ class MLX_ModelArgs(BaseModel):
 
     def moe_intermediate(self) -> int:
         """Get MoE intermediate size if applicable, else 0."""
-        if self.module.module_name == "qwen2_moe" or self.module.module_name == "qwen3_moe":
+        if (
+            self.module.module_name == "qwen2_moe" 
+            or self.module.module_name == "qwen3_moe"
+            or self.module.module_name == "deepseek_v3"
+        ):
             return self.module.args.moe_intermediate_size
         else:
             # uses standard intermediate size if no MoE
@@ -238,6 +259,7 @@ class MLX_ModelArgs(BaseModel):
             or self.module.module_name == "qwen3_moe"
             or self.module.module_name == "gpt_oss"
             or self.module.module_name == "mistral"
+            or self.module.module_name == "deepseek_v3"
         ):
             return self.module.args.num_experts_per_tok
         else:
@@ -245,8 +267,74 @@ class MLX_ModelArgs(BaseModel):
 
     def n_shared(self) -> int:
         """Get number of shared experts if applicable, else 0."""
-        # FIXME: none of the models we have use of this?
-        return 0
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.n_shared_experts
+        else:
+            return 0
+
+    def routed_scaling_factor(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.routed_scaling_factor
+
+    def kv_lora_rank(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.kv_lora_rank
+
+    def q_lora_rank(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.q_lora_rank
+
+    def qk_rope_head_dim(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.qk_rope_head_dim
+
+    def v_head_dim(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.v_head_dim
+
+    def qk_nope_head_dim(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.qk_nope_head_dim
+
+    def topk_method(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.topk_method
+
+    def scoring_func(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.scoring_func
+
+    def norm_topk_prob(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.norm_topk_prob
+
+    def n_group(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.n_group
+
+    def topk_group(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.topk_group
+
+    def first_k_dense_replace(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.first_k_dense_replace
+
+    def rms_norm_eps(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.rms_norm_eps
+
+    def rope_theta(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.rope_theta
+
+    def rope_scaling(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.rope_scaling
+
+    def attention_bias(self) -> float:
+        if self.module.module_name == "deepseek_v3":
+            return self.module.args.attention_bias
 
 
 def load_config_from_repo(repo_id: str) -> MLX_ModelArgs:
