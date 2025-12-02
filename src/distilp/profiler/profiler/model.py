@@ -208,6 +208,9 @@ def in_profile_model(
                                         num_proj_smlp = 3
                                     elif key2 in ["up_proj", "down_proj"]:
                                         smlp_f += 2 * tokens * num_experts_tok * DS
+                                    elif key2 == "gate_up_proj": # specific to GLM
+                                        smlp_f += 2 * tokens * num_expert_tok * (2 * DS)
+                                        num_proj_smlp = 3
                                     elif key2 == "activations":
                                         # Activation FLOPs are small; include linear in L for completeness
                                         smlp_f += tokens * num_experts_tok * moe_intermediate
@@ -261,6 +264,9 @@ def in_profile_model(
                                         num_proj_se = 3
                                     if key2 in ["gate_proj", "up_proj", "down_proj"]:
                                         se_f += 2 * tokens * cfg.hidden_size() * n_shared * shared_intermediate
+                                    if key2 == "gate_up_proj": # specific to GLM
+                                        num_proj_se = 3
+                                        se_f += 2 * tokens * cfg.hidden_size() * n_shared * (2 * shared_intermediate)
 
                                 local_w_bits = w_bits
                                 if is_excluded(mlp_path):
@@ -295,6 +301,9 @@ def in_profile_model(
                                     found_expert_down = True
                                 if key_l.endswith("gate_proj") or ".gate_proj" in key_l:
                                     found_expert_gatep = True
+                                if key_l.endswith("gate_up_proj") or ".gate_up_proj" in key_l: # specific to GLM
+                                    found_expert_up = True
+                                    found_expert_gatep = True
                             # Fallback pattern detection for shared experts
                             if "shared" in key_l and ("experts" in key_l or "expert" in key_l):
                                 if key_l.endswith("up_proj") or ".up_proj" in key_l:
@@ -302,6 +311,9 @@ def in_profile_model(
                                 if key_l.endswith("down_proj") or ".down_proj" in key_l:
                                     found_shared_down = True
                                 if key_l.endswith("gate_proj") or ".gate_proj" in key_l:
+                                    found_shared_gatep = True
+                                if key_l.endswith("gate_up_proj") or ".gate_up_proj" in key_l: # specific to GLM
+                                    found_shared_up = True
                                     found_shared_gatep = True
 
                         # End of traversal: if no switch_mlp block but expert projections detected, compute generically
@@ -457,6 +469,14 @@ def in_profile_model(
                             if key in ["gate_proj", "up_proj", "down_proj"]:
                                 lm.flops += 2 * tokens * cfg.hidden_size() * cfg.intermediate_size()
                                 n = cfg.hidden_size() * cfg.intermediate_size()
+                                if w_bits < 16 and group_size is not None:
+                                    proj_bytes += __quantized_bytes(n, w_bits, group_size, scale_bytes, zero_bytes)
+                                else:
+                                    proj_bytes += ceil((n * w_bits) / 8)
+                            if key == "gate_up_proj": # double gate specific to GLM models
+                                num_proj = 3
+                                lm.flops += 2 * tokens * cfg.hidden_size() * (2 * cfg.intermediate_size())
+                                n = cfg.hidden_size() * (2 * cfg.intermediate_size())
                                 if w_bits < 16 and group_size is not None:
                                     proj_bytes += __quantized_bytes(n, w_bits, group_size, scale_bytes, zero_bytes)
                                 else:
