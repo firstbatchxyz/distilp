@@ -13,6 +13,7 @@ import mlx_lm.models.qwen2_moe as QWEN2_MOE
 import mlx_lm.models.qwen3 as QWEN3
 import mlx_lm.models.qwen3_moe as QWEN3_MOE
 import mlx_lm.models.gemma2 as GEMMA2
+import mlx_lm.models.glm4 as GLM4
 
 
 # import mlx_lm.models.deepseek_v2 as DEEPSEEK_V2
@@ -29,6 +30,7 @@ type MODEL_ARCHS = Literal[
     "gemma2",
     "phi3",
     "gpt_oss",
+    "glm4",
 ]
 
 
@@ -57,6 +59,9 @@ _MODEL_TYPE_ALIASES: Dict[str, MODEL_ARCHS] = {
     "phi3": "phi3",
     # GPT-OSS
     "gpt_oss": "gpt_oss",
+    # GLM
+    "glm4": "glm4",
+    "glm-4": "glm4",
 }
 
 
@@ -104,6 +109,10 @@ class _MLX_ModelArgs_GEMMA2(BaseModel):
     module_name: Literal["gemma2"]
     args: GEMMA2.ModelArgs
 
+class _MLX_ModelArgs_GLM4(BaseModel):
+    module_name: Literal["glm4"]
+    args: GLM4.ModelArgs
+
 
 class MLX_ModelArgs(BaseModel):
     """A discriminated union of all supported `mlx_lm` `ModelArgs` types."""
@@ -118,6 +127,7 @@ class MLX_ModelArgs(BaseModel):
         | _MLX_ModelArgs_QWEN3
         | _MLX_ModelArgs_QWEN3_MOE
         | _MLX_ModelArgs_GEMMA2
+        | _MLX_ModelArgs_GLM4
     ) = Field(discriminator="module_name")
 
     # raw dictionary of original config.json
@@ -142,6 +152,8 @@ class MLX_ModelArgs(BaseModel):
             return QWEN3_MOE.Model(self.module.args)
         elif self.module.module_name == "gemma2":
             return GEMMA2.Model(self.module.args)
+        elif self.module.module_name == "glm4":
+            return GLM4.Model(self.module.args)
         else:
             raise ValueError(f"Unsupported module_name: {self.module.module_name}")
 
@@ -164,6 +176,7 @@ class MLX_ModelArgs(BaseModel):
             or self.module.module_name == "qwen2"
             or self.module.module_name == "qwen3"
             or self.module.module_name == "qwen3_moe"
+            or self.module.module_name == "glm4"
         ):
             return self.module.args.max_position_embeddings
         else:
