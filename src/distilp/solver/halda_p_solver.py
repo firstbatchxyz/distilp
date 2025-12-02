@@ -74,6 +74,7 @@ def solve_fixed_k_milp(
 
     # Coefficients and constants
     a, b, c_vec = objective_vectors(devs, model, sets, kv_factor)
+
     kappa = kappa_constant(devs, model, sets)
     total_inter_comm_time_per_round = 0
 
@@ -191,7 +192,7 @@ def solve_fixed_k_milp(
         return b_cio_b(devs[i], model)
 
     # Helpers for cycle-time + prefetch modeling
-    def busy_row_for(i: int) -> np.ndarray:
+    def busy_row_for(i: int) -> tuple[np.ndarray, float]:
         s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
         penM1 = bprime / s_disk_i
         penM2 = model.b_layer / s_disk_i
@@ -202,15 +203,16 @@ def solve_fixed_k_milp(
             penVRAM = penM3
 
         row = np.zeros(Nvars)
-        row += devs[i].t_comm
-        row += c_vec[i]
         row[idx_w(i)] = float(a[i])  # sec/layer including comms
         row[idx_n(i)] = float(b[i])  # (can be negative) GPU delta
         row[idx_s1(i)] = float(penM1)
         row[idx_s2(i)] = float(penM2)
         row[idx_s3(i)] = float(penM3)
         row[idx_t(i)] = float(penVRAM)
-        return row
+
+        const = float(c_vec[i]) + float(devs[i].t_comm)
+
+        return row, const
 
     def fetch_row_for(i: int) -> np.ndarray:
         # F_i = w_i * (bprime / s_disk_i)
@@ -277,21 +279,22 @@ def solve_fixed_k_milp(
     # Cycle time C and stall z_i constraints per device
     # For each i: (1) C >= B_i + z_i ; (2) z_i >= F_i - (C - B_i)
     for i in range(M):
-        # (1) C >= B_i + z_i  ->  -B_i - z_i + C >= 0  -> add as <= 0 by multiplying -1
-        row1 = -busy_row_for(i)
-        row1[idx_z(i)] += -1.0
-        row1[idx_C] += 1.0
-        A_ub.append(-row1)
-        b_ub.append(0.0)
+    # (1) C >= B_i + z_i  ->  B_i + z_i - C <= -(ξ_i + t_comm_i)
+        rowB, constB = busy_row_for(i)
+        row1 = np.copy(rowB)
+        row1[idx_z(i)] += 1.0
+        row1[idx_C] += -1.0
+        A_ub.append(row1)
+        b_ub.append(-constB)
 
-        # (2) z_i >= F_i - (C - B_i) -> z_i - B_i + C - F_i >= 0 -> add as <= 0 with -1
-        row2 = np.zeros(Nvars)
-        row2[idx_z(i)] = 1.0
-        row2[idx_C] = 1.0
-        row2 -= busy_row_for(i)
-        row2 -= fetch_row_for(i)  # bring F_i to LHS
-        A_ub.append(-row2)
-        b_ub.append(0.0)
+    # (2) z_i >= F_i - (C - B_i)
+    # -> -z_i + F_i - C + B_i <= -(ξ_i + t_comm_i)
+        rowF = fetch_row_for(i)
+        row2 = rowB + rowF
+        row2[idx_z(i)] += -1.0
+        row2[idx_C] += -1.0
+        A_ub.append(row2)
+        b_ub.append(-constB)
 
     constraints = []
     if A_ub:
