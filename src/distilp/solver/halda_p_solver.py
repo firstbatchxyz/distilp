@@ -1,30 +1,33 @@
 """
-HALDA with SciPy.
+HALDA with SciPy (HiGHS MILP).
 
-This is a slightly modified version of the HALDA solver from Prima.CPP implemented in Scipy
-refining the mathematical model suggested by introducing cycle time which more accurately
-accounts for inter-device overlap and fits to Apple UMA.
+This is the SciPy-based replacement for the Gurobi MILP implementation in this file.
+It keeps the *same* variables/constraints structure you currently have (including the
+modified scheduling constraints) and preserves the debug prints + Gantt plot behavior
+for k == 2.
 
-@misc{li2025primacppfast3070bllm,
-      title={Prima.cpp: Fast 30-70B LLM Inference on Heterogeneous and Low-Resource Home Clusters},
-      author={Zonghang Li and Tao Li and Wenjiao Feng and Rongxing Xiao and Jianshu She and Hong Huang and Mohsen Guizani and Hongfang Yu and Qirong Ho and Wei Xiang and Steve Liu},
-      year={2025},
-      eprint={2504.08791},
-      archivePrefix={arXiv},
-      primaryClass={cs.DC},
-      url={https://arxiv.org/abs/2504.08791},
-}
+Solver backend: scipy.optimize.milp (HiGHS)
+
+Requirements:
+    scipy >= 1.11 recommended (milp + HiGHS options)
 """
 
 from __future__ import annotations
-from typing import Iterable, List, Optional, Tuple, Dict
-import numpy as np
-from scipy.optimize import milp, Bounds, LinearConstraint
-from .components.plotter import plot_k_curve
 
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from scipy.optimize import milp, LinearConstraint, Bounds
+from scipy.sparse import coo_matrix
+
+
+from .components.plotter import plot_k_curve
 from .components.dense_common import (
     b_cio_b,
     b_prime,
+    b_prime_adj,
     assign_sets,
     objective_vectors,
     kappa_constant,
@@ -34,6 +37,131 @@ from .components.dense_common import (
     ILPResult,
     HALDAResult,
 )
+
+
+def plot_schedule_gantt_ordered(
+    devs,
+    Start,
+    End,
+    busy_times,
+    fetch_times,
+    k: int,
+    title: str | None = None,
+):
+    """
+    Gantt chart ordered by:
+        round → compute start time → device index
+
+    Shows for each round/device:
+        - Prefetch (blue)
+        - Compute (orange)
+        - Communication t_comm (green)
+
+    This function works with either:
+      - Gurobi vars/exprs (uses .X and .getValue()), OR
+      - numeric arrays/lists (SciPy path).
+    """
+
+    def _val(z) -> float:
+        # Gurobi Var has .X; SciPy path uses floats
+        if hasattr(z, "X"):
+            return float(z.X)
+        return float(z)
+
+    def _expr_val(z) -> float:
+        # Gurobi LinExpr has .getValue(); SciPy path uses floats
+        if hasattr(z, "getValue"):
+            return float(z.getValue())
+        return float(z)
+
+    M = len(devs)
+
+    busy_val = [_expr_val(bt) for bt in busy_times]
+    fetch_val = [_expr_val(ft) for ft in fetch_times]
+    tcomm_val = [float(d.t_comm) for d in devs]
+
+    fig, ax = plt.subplots(figsize=(14, max(4, 0.5 * M * k)))
+
+    y = 0
+    yticks = []
+    ylabels = []
+
+    # Legend flags
+    added_prefetch = False
+    added_compute = False
+    added_comm = False
+
+    # Loop by round first
+    for r in range(k):
+        # Sort devices in this round by actual compute start time
+        order = sorted(range(M), key=lambda i: _val(Start[i, r]))
+
+        for i in order:
+            comp_start = _val(Start[i, r])
+            comp_dur = busy_val[i]
+
+            # Prefetch start logic
+            if r == 0:
+                prefetch_start = 0.0
+            else:
+                prefetch_start = _val(End[i, r - 1])
+            prefetch_dur = fetch_val[i]
+
+            # Communication interval
+            comm_start = _val(End[i, r])
+            comm_dur = tcomm_val[i]
+
+            # Labels
+            yticks.append(y)
+            ylabels.append(f"Round {r} – Dev {i}")
+
+            # === PREFETCH BAR (blue) ===
+            ax.broken_barh(
+                [(prefetch_start, prefetch_dur)],
+                (y - 0.35, 0.25),
+                facecolor="tab:blue",
+                edgecolor="black",
+                label=None if added_prefetch else "prefetch",
+            )
+            if not added_prefetch:
+                added_prefetch = True
+
+            # === COMPUTE BAR (orange) ===
+            ax.broken_barh(
+                [(comp_start, comp_dur)],
+                (y - 0.05, 0.25),
+                facecolor="tab:orange",
+                edgecolor="black",
+                label=None if added_compute else "compute",
+            )
+            if not added_compute:
+                added_compute = True
+
+            # === COMM BAR (green) ===
+            ax.broken_barh(
+                [(comm_start, comm_dur)],
+                (y + 0.25, 0.20),
+                facecolor="tab:green",
+                edgecolor="black",
+                label=None if added_comm else "comm (t_comm)",
+            )
+            if not added_comm:
+                added_comm = True
+
+            y += 1
+
+    ax.set_yticks(yticks)
+    ax.set_yticklabels(ylabels)
+    ax.set_xlabel("time")
+    ax.grid(True, axis="x", linestyle="--", alpha=0.4)
+
+    if title is None:
+        title = f"HALDA Gantt (k={k})"
+    ax.set_title(title)
+
+    ax.legend(loc="upper left")
+    plt.tight_layout()
+    plt.show()
 
 
 def _kv_bits_to_factor(kv_bits: str) -> float:
@@ -66,267 +194,271 @@ def solve_fixed_k_milp(
     mip_gap: Optional[float] = 1e-4,
 ) -> ILPResult:
     """
-    SciPy >= 1.11 required (for scipy.optimize.milp).
+    Solve fixed-k HALDA MILP using SciPy (HiGHS via scipy.optimize.milp),
+    matching the *current* model in this file.
+
+    Variables:
+      - Integer: w[i], n[i], s1[i], s2[i], s3[i], t[i]
+      - Continuous: Start[i,r], End[i,r]
+    Constraints:
+      - n[i] <= w[i]
+      - sum_i w[i] == W
+      - memory constraints (M1/M2/M3) + GPU caps with overflow t[i]
+      - scheduling constraints:
+          End[i,r] == Start[i,r] + busy[i]
+          Start[i,0] >= fetch[i]
+          Start[i,0] >= End[i-1,0] + t_comm[i-1]  (for i>0)
+          For r>=1:
+            Start[0,r] >= End[M-1,r-1] + t_comm[M-1]
+            Start[i,r] >= End[i-1,r] + t_comm[i-1] (for i>0)
+            Start[i,r] >= End[i,r-1] + fetch[i]
+    Objective:
+      - minimize End[M-1,k-1] + devs[M-1].t_comm + kappa
     """
     M = len(devs)
+    if model.L % k != 0:
+        raise ValueError(f"model.L={model.L} must be divisible by k={k}")
     W = model.L // k
-    bprime = b_prime(model, kv_bits_k=kv_factor)
 
-    # Coefficients and constants
+    bprime = float(b_prime(model, kv_bits_k=kv_factor))
+    bprime_adj = float(b_prime_adj(model, kv_bits_k=kv_factor))
+
     a, b, c_vec = objective_vectors(devs, model, sets, kv_factor)
-    kappa = kappa_constant(devs, model, sets)
-    total_inter_comm_time_per_round = 0
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    c_vec = np.asarray(c_vec, dtype=float)
 
-    # x = [ w(0..M-1) | n(0..M-1) | s1(0..M-1) | s2(0..M-1) | s3(0..M-1) | t(0..M-1) ]
-    def idx_w(i):
-        return i
+    kappa = float(kappa_constant(devs, model, sets))
 
-    def idx_n(i):
-        return M + i
+    M1 = set(sets.get("M1", []))
+    M2 = set(sets.get("M2", []))
+    M3 = set(sets.get("M3", []))
 
-    def idx_s1(i):
-        return 2 * M + i
+    # -------------------------
+    # Variable indexing in x
+    # -------------------------
+    # Integers: w, n, s1, s2, s3, t (each length M)
+    # Continuous: Start(M*k), End(M*k)
+    off_w = 0
+    off_n = off_w + M
+    off_s1 = off_n + M
+    off_s2 = off_s1 + M
+    off_s3 = off_s2 + M
+    off_t = off_s3 + M
+    off_Start = off_t + M
+    off_End = off_Start + M * k
+    n_vars = off_End + M * k
 
-    def idx_s2(i):
-        return 3 * M + i
+    def idx_w(i: int) -> int: return off_w + i
+    def idx_n(i: int) -> int: return off_n + i
+    def idx_s1(i: int) -> int: return off_s1 + i
+    def idx_s2(i: int) -> int: return off_s2 + i
+    def idx_s3(i: int) -> int: return off_s3 + i
+    def idx_t(i: int) -> int: return off_t + i
+    def idx_Start(i: int, r: int) -> int: return off_Start + i * k + r
+    def idx_End(i: int, r: int) -> int: return off_End + i * k + r
 
-    def idx_s3(i):
-        return 4 * M + i
+    # -------------------------
+    # Bounds + integrality
+    # -------------------------
+    lb = np.zeros(n_vars, dtype=float)
+    ub = np.full(n_vars, np.inf, dtype=float)
+    integrality = np.zeros(n_vars, dtype=int)
 
-    def idx_t(i):
-        return 5 * M + i
-
-    # NEW: stall variables z_i and global cycle time C
-    def idx_z(i):
-        return 6 * M + i
-
-    idx_C = 7 * M  # scalar index for cycle time
-
-    Nvars = 7 * M + 1
-
-    # Bounds & integrality
-    lb = np.zeros(Nvars)
-    ub = np.zeros(Nvars)
-
-    # n upper bounds: allow up to W layers unless the device has no GPU backend at all
-    # slacks are in LAYERS (integers): [0, W]
-
+    # Integer vars bounds
     for i, d in enumerate(devs):
-        # w: at least 1 layer on each active device as before, up to W
+        has_cuda = bool(getattr(d, "has_cuda", False) and getattr(d, "d_avail_cuda", None) is not None)
+        has_metal = bool(getattr(d, "has_metal", False) and getattr(d, "d_avail_metal", None) is not None)
+        has_gpu = has_cuda or has_metal
+
+        # w[i] in [1, W]
         lb[idx_w(i)] = 1
         ub[idx_w(i)] = W
+        integrality[idx_w(i)] = 1
 
-        # n: if no CUDA and no Metal, n must be 0; otherwise allow up to W
-        has_cuda = bool(d.has_cuda and d.d_avail_cuda is not None)
-        has_metal = bool(d.has_metal and d.d_avail_metal is not None)
-        if not (has_cuda or has_metal):
-            lb[idx_n(i)] = 0
-            ub[idx_n(i)] = 0
-        else:
-            lb[idx_n(i)] = 0
-            ub[idx_n(i)] = W
+        # n[i] in [0,W] if has_gpu else fixed 0
+        lb[idx_n(i)] = 0
+        ub[idx_n(i)] = W if has_gpu else 0
+        integrality[idx_n(i)] = 1
 
-        # Slacks default: [0, W] (in layers)
-        # Also fix to 0 if the device is not in the corresponding set.
-        in_M1 = i in sets.get("M1", [])
-        in_M2 = i in sets.get("M2", [])
-        in_M3 = i in sets.get("M3", [])
-
-        # s1 (M1 overflow in layers)
+        # s1/s2/s3 only allowed on their set
         lb[idx_s1(i)] = 0
-        ub[idx_s1(i)] = W if in_M1 else 0
+        ub[idx_s1(i)] = W if i in M1 else 0
+        integrality[idx_s1(i)] = 1
 
-        # s2 (M2 overflow in layers)
         lb[idx_s2(i)] = 0
-        ub[idx_s2(i)] = W if in_M2 else 0
+        ub[idx_s2(i)] = W if i in M2 else 0
+        integrality[idx_s2(i)] = 1
 
-        # s3 (M3 overflow in layers)
         lb[idx_s3(i)] = 0
-        ub[idx_s3(i)] = W if in_M3 else 0
+        ub[idx_s3(i)] = W if i in M3 else 0
+        integrality[idx_s3(i)] = 1
 
-        # t (VRAM overflow in layers) — always allowed up to W if any GPU backend exists,
-        # otherwise fixed to 0.
+        # t[i] in [0,W] if has_gpu else fixed 0
         lb[idx_t(i)] = 0
-        ub[idx_t(i)] = W if (has_cuda or has_metal) else 0
+        ub[idx_t(i)] = W if has_gpu else 0
+        integrality[idx_t(i)] = 1
 
-        total_inter_comm_time_per_round += d.t_comm
+    # Start/End are continuous and already have lb=0, ub=inf
+    bounds = Bounds(lb, ub)
 
-    # NEW: bounds for stall z_i and cycle time C
+    # -------------------------
+    # Build linear constraints A x in [clb, cub]
+    # -------------------------
+    data: List[float] = []
+    rows: List[int] = []
+    cols: List[int] = []
+    clb: List[float] = []
+    cub: List[float] = []
+
+    def add_row(coefs: Dict[int, float], row_lb: float, row_ub: float):
+        r = len(clb)
+        clb.append(float(row_lb))
+        cub.append(float(row_ub))
+        for j, v in coefs.items():
+            v = float(v)
+            if v != 0.0:
+                rows.append(r)
+                cols.append(int(j))
+                data.append(v)
+
+    # n[i] <= w[i]  ->  n[i] - w[i] <= 0
     for i in range(M):
-        lb[idx_z(i)] = 0.0
-        ub[idx_z(i)] = np.inf
-    lb[idx_C] = 0.0
-    ub[idx_C] = np.inf
+        add_row({idx_n(i): 1.0, idx_w(i): -1.0}, -np.inf, 0.0)
 
-    bounds = Bounds(lb, ub)  # type: ignore (ub/lb arrays are allowed)
+    # sum_i w[i] == W
+    add_row({idx_w(i): 1.0 for i in range(M)}, W, W)
 
-    integrality = np.ones(Nvars, dtype=int)  # integers by default
-    # NEW: make z_i and C continuous
-    for i in range(M):
-        integrality[idx_z(i)] = 0
-    integrality[idx_C] = 0
-
-    # Constraints
-    A_ub = []
-    b_ub = []
-    A_eq = []
-    b_eq = []
-
-    # n_i - w_i <= 0 (can't put more layers on GPU than assigned to device i)
-    for i in range(M):
-        row = np.zeros(Nvars)
-        row[idx_n(i)] = 1
-        row[idx_w(i)] = -1
-        A_ub.append(row)
-        b_ub.append(0.0)
-
-    # Sum w_i = W
-    row = np.zeros(Nvars)
-    for i in range(M):
-        row[idx_w(i)] = 1
-    A_eq.append(row)
-    b_eq.append(float(W))
-
+    # Memory helper
     def bcio(i: int) -> float:
-        return b_cio_b(devs[i], model)
+        return float(b_cio_b(devs[i], model))
 
-    # Helpers for cycle-time + prefetch modeling
-    def busy_row_for(i: int) -> np.ndarray:
-        s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
-        penM1 = bprime / s_disk_i
-        penM2 = model.b_layer / s_disk_i
-        penM3 = bprime / s_disk_i
-        if i in sets.get("M2", []):
-            penVRAM = penM2
-        else:
-            penVRAM = penM3
+    # M1: bprime*w - bprime_adj*s1 <= d_avail_ram - bcio
+    for i in M1:
+        rhs_cap = float(devs[i].d_avail_ram) - bcio(i)
+        add_row({idx_w(i): bprime, idx_s1(i): -bprime_adj}, -np.inf, rhs_cap)
 
-        row = np.zeros(Nvars)
-        row += devs[i].t_comm
-        row += c_vec[i]
-        row[idx_w(i)] = float(a[i])  # sec/layer including comms
-        row[idx_n(i)] = float(b[i])  # (can be negative) GPU delta
-        row[idx_s1(i)] = float(penM1)
-        row[idx_s2(i)] = float(penM2)
-        row[idx_s3(i)] = float(penM3)
-        row[idx_t(i)] = float(penVRAM)
-        return row
-
-    def fetch_row_for(i: int) -> np.ndarray:
-        # F_i = w_i * (bprime / s_disk_i)
-        s_disk_i = max(1.0, float(devs[i].s_disk))
-        coef = bprime / s_disk_i
-        row = np.zeros(Nvars)
-        row[idx_w(i)] = coef
-
-        return row
-
-    # M1: b' * w_i <= d_avail_ram - bcio + b' * s1_i
-    for i in sets.get("M1", []):
-        rhs_cap = float(devs[i].d_avail_ram) - float(bcio(i))
-        row = np.zeros(Nvars)
-        row[idx_w(i)] = bprime
-        row[idx_s1(i)] = -bprime
-        A_ub.append(row)
-        b_ub.append(rhs_cap)
-
-    # M2: b' * w_i <= d_avail_metal - bcio - c_gpu + b' * s2_i
-    for i in sets.get("M2", []):
-        d_avail_metal = devs[i].d_avail_metal
-        if d_avail_metal is None:
+    # M2: bprime_adj*w - bprime_adj*s2 <= d_avail_metal - bcio - c_gpu
+    for i in M2:
+        if devs[i].d_avail_metal is None:
             continue
-        dav_metal = float(d_avail_metal)
-        rhs_cap = dav_metal - float(bcio(i)) - float(devs[i].c_gpu)
-        row = np.zeros(Nvars)
-        row[idx_w(i)] = bprime
-        row[idx_s2(i)] = -bprime
-        A_ub.append(row)
-        b_ub.append(rhs_cap)
+        rhs_cap = float(devs[i].d_avail_metal) - bcio(i) - float(devs[i].c_gpu)
+        add_row({idx_w(i): bprime_adj, idx_s2(i): -bprime_adj}, -np.inf, rhs_cap)
 
-    # M3: b' * (w_i - n_i) <= d_avail_ram + dswap - bcio + b' * s3_i
-    for i in sets.get("M3", []):
+    # M3: bprime_adj*w - bprime_adj*n - bprime_adj*s3 <= d_avail_ram + dswap - bcio
+    for i in M3:
         d = devs[i]
-        dswap = min(d.d_bytes_can_swap, d.d_swap_avail) if d.os_type == "android" else 0
-        rhs_cap = float(d.d_avail_ram + dswap) - float(bcio(i))
-        row = np.zeros(Nvars)
-        row[idx_w(i)] = bprime
-        row[idx_n(i)] = -bprime
-        row[idx_s3(i)] = -bprime
-        A_ub.append(row)
-        b_ub.append(rhs_cap)
+        dswap = (
+            float(min(d.d_bytes_can_swap, d.d_swap_avail))
+            if getattr(d, "os_type", None) == "android"
+            else 0.0
+        )
+        rhs_cap = float(d.d_avail_ram) + dswap - bcio(i)
+        add_row(
+            {idx_w(i): bprime_adj, idx_n(i): -bprime_adj, idx_s3(i): -bprime_adj},
+            -np.inf,
+            rhs_cap,
+        )
 
-    # VRAM/shared caps with single overflow t_i used in both inequalities (no double charge)
+    # VRAM / shared caps with single overflow t[i] used in both inequalities (no double charge)
     for i, d in enumerate(devs):
-        if d.has_cuda and d.d_avail_cuda is not None:
+        if getattr(d, "has_cuda", False) and getattr(d, "d_avail_cuda", None) is not None:
             rhs = float(d.d_avail_cuda) - float(d.c_gpu)
-            row = np.zeros(Nvars)
-            row[idx_n(i)] = bprime
-            row[idx_t(i)] = -bprime
-            A_ub.append(row)
-            b_ub.append(rhs)
+            add_row({idx_n(i): bprime_adj, idx_t(i): -bprime_adj}, -np.inf, rhs)
 
-        if d.has_metal and d.d_avail_metal is not None:
-            head = 1.0 if d.is_head else 0.0
-            row = np.zeros(Nvars)
-            rhs = float(d.d_avail_metal) - float(d.c_gpu) - float(model.b_out * head)
-            row[idx_n(i)] = bprime
-            row[idx_t(i)] = -bprime
-            A_ub.append(row)
-            b_ub.append(rhs)
+        if getattr(d, "has_metal", False) and getattr(d, "d_avail_metal", None) is not None:
+            head = 1.0 if getattr(d, "is_head", False) else 0.0
+            rhs = float(d.d_avail_metal) - float(d.c_gpu) - float(model.b_out) * head
+            add_row({idx_n(i): bprime_adj, idx_t(i): -bprime_adj}, -np.inf, rhs)
 
-    # Cycle time C and stall z_i constraints per device
-    # For each i: (1) C >= B_i + z_i ; (2) z_i >= F_i - (C - B_i)
-    for i in range(M):
-        # (1) C >= B_i + z_i  ->  -B_i - z_i + C >= 0  -> add as <= 0 by multiplying -1
-        row1 = -busy_row_for(i)
-        row1[idx_z(i)] += -1.0
-        row1[idx_C] += 1.0
-        A_ub.append(-row1)
-        b_ub.append(0.0)
-
-        # (2) z_i >= F_i - (C - B_i) -> z_i - B_i + C - F_i >= 0 -> add as <= 0 with -1
-        row2 = np.zeros(Nvars)
-        row2[idx_z(i)] = 1.0
-        row2[idx_C] = 1.0
-        row2 -= busy_row_for(i)
-        row2 -= fetch_row_for(i)  # bring F_i to LHS
-        A_ub.append(-row2)
-        b_ub.append(0.0)
-
-    constraints = []
-    if A_ub:
-        A_ub = np.vstack(A_ub)
-        b_ub = np.asarray(b_ub, dtype=float)
-        constraints.append(LinearConstraint(A_ub, -np.inf, b_ub))  # type: ignore (ub/lb arrays are allowed)
-    if A_eq:
-        A_eq = np.vstack(A_eq)
-        b_eq = np.asarray(b_eq, dtype=float)
-        constraints.append(LinearConstraint(A_eq, b_eq, b_eq))  # type: ignore (ub/lb arrays are allowed)
-
-    # Objective: minimize cycle time C + penalties
-    c_obj = np.zeros(Nvars)
-    # Minimize k * C (steady-state cycle time scaled by k)
-    c_obj[idx_C] = float(k - 1)
+    # Scheduling model pieces
+    # busy[i] = sum(coefs*intvars) + constB
+    # fetch[i] = fetch_coef[i] * w[i]
+    busy_int_coefs: List[Dict[int, float]] = []
+    busy_const: List[float] = []
+    fetch_coef: List[float] = []
 
     for i in range(M):
-        # No direct cost on w_i or n_i; they influence objective via C through constraints
-        c_obj[idx_w(i)] = float(a[i])
-        c_obj[idx_n(i)] = float(b[i])
-
-        # per-layer overflow penalties for RAM / VRAM (unchanged)
         s_disk_i = max(1.0, float(devs[i].s_disk))  # avoid divide-by-zero
-        penM1 = bprime / s_disk_i
-        penM2 = model.b_layer / s_disk_i
-        penM3 = bprime / s_disk_i
-        if i in sets.get("M2", []):
-            penVRAM = penM2
-        else:
-            penVRAM = penM3
 
-        c_obj[idx_s1(i)] = penM1
-        c_obj[idx_s2(i)] = penM2
-        c_obj[idx_s3(i)] = penM3
-        c_obj[idx_t(i)] = penVRAM
+        penM1 = bprime / s_disk_i
+        penM2 = float(model.b_layer) / s_disk_i
+        penM3 = bprime / s_disk_i
+        penVRAM = penM2 if i in M2 else penM3
+
+        busy_int_coefs.append(
+            {
+                idx_w(i): float(a[i]),
+                idx_n(i): float(b[i]),
+                idx_s1(i): penM1,
+                idx_s2(i): penM2,
+                idx_s3(i): penM3,
+                idx_t(i): penVRAM,
+            }
+        )
+        busy_const.append(float(c_vec[i]))
+        fetch_coef.append(bprime / s_disk_i)
+
+    def pred(i: int) -> int:
+        return (i - 1) % M
+
+    # End[i,r] == Start[i,r] + busy[i]
+    # => End - Start - sum(intcoefs) == const
+    for i in range(M):
+        for r in range(k):
+            coefs = {idx_End(i, r): 1.0, idx_Start(i, r): -1.0}
+            for j, v in busy_int_coefs[i].items():
+                coefs[j] = coefs.get(j, 0.0) - float(v)
+            add_row(coefs, busy_const[i], busy_const[i])
+
+    # Start[i,0] >= fetch[i]  => Start - fetch_coef*w >= 0
+    for i in range(M):
+        add_row({idx_Start(i, 0): 1.0, idx_w(i): -fetch_coef[i]}, 0.0, np.inf)
+
+    # Round 0 comm: for i>0: Start[i,0] >= End[p,0] + t_comm[p]
+    for i in range(1, M):
+        p = pred(i)
+        add_row({idx_Start(i, 0): 1.0, idx_End(p, 0): -1.0}, float(devs[p].t_comm), np.inf)
+
+    # For rounds >=1
+    if k > 1:
+        for i in range(M):
+            for r in range(1, k):
+                p = pred(i)
+                if i == 0:
+                    # Start[0,r] >= End[M-1,r-1] + t_comm[M-1]
+                    add_row(
+                        {idx_Start(i, r): 1.0, idx_End(p, r - 1): -1.0},
+                        float(devs[p].t_comm),
+                        np.inf,
+                    )
+                else:
+                    # Start[i,r] >= End[i-1,r] + t_comm[i-1]
+                    add_row(
+                        {idx_Start(i, r): 1.0, idx_End(p, r): -1.0},
+                        float(devs[p].t_comm),
+                        np.inf,
+                    )
+
+                # Start[i,r] >= End[i,r-1] + fetch[i]
+                add_row(
+                    {idx_Start(i, r): 1.0, idx_End(i, r - 1): -1.0, idx_w(i): -fetch_coef[i]},
+                    0.0,
+                    np.inf,
+                )
+
+    A = coo_matrix(
+        (np.asarray(data, dtype=float), (np.asarray(rows, dtype=int), np.asarray(cols, dtype=int))),
+        shape=(len(clb), n_vars),
+    ).tocsr()
+
+    constraints = LinearConstraint(A, np.asarray(clb, dtype=float), np.asarray(cub, dtype=float))
+
+    # -------------------------
+    # Objective: minimize End[M-1,k-1] (+ constants added after solve)
+    # -------------------------
+    c = np.zeros(n_vars, dtype=float)
+    c[idx_End(M - 1, k - 1)] = 1.0
 
     options = {}
     if time_limit is not None:
@@ -334,33 +466,113 @@ def solve_fixed_k_milp(
     if mip_gap is not None:
         options["mip_rel_gap"] = float(mip_gap)
 
-    res = milp(
-        c=c_obj,
-        integrality=integrality,
-        bounds=bounds,
-        constraints=constraints,
-        options=options,
-    )
-    if not res.success:
-        raise RuntimeError("No feasible MILP found.")
+    res = milp(c=c, integrality=integrality, bounds=bounds, constraints=constraints, options=options)
 
-    x = res.x
+    if (not getattr(res, "success", False)) or res.x is None:
+        raise RuntimeError(f"No feasible MILP found. HiGHS status: {getattr(res, 'message', res)}")
 
+    x = np.asarray(res.x, dtype=float)
+
+    # Extract integer decisions (rounded for safety)
     w_sol = [int(round(x[idx_w(i)])) for i in range(M)]
     n_sol = [int(round(x[idx_n(i)])) for i in range(M)]
 
-    # Full objective value with constants
-    linear_val = float(c_obj.dot(x))
-    obj_value = linear_val + total_inter_comm_time_per_round + sum(float(ci) for ci in c_vec) + kappa
+    # Extract Start/End for debug/plot
+    Start_val = np.zeros((M, k), dtype=float)
+    End_val = np.zeros((M, k), dtype=float)
+    for i in range(M):
+        for r in range(k):
+            Start_val[i, r] = float(x[idx_Start(i, r)])
+            End_val[i, r] = float(x[idx_End(i, r)])
 
-    # Optional: print only non-zero decision variables
-    # for i, (w_i, n_i) in enumerate(zip(w_sol, n_sol)):
-    #    if w_i > 0:
-    #        print(f"w[{i}] {float(w_i)}")
-    #    if n_i > 0:
-    #        print(f"n[{i}] {float(n_i)}")
+    # Compute busy/fetch values (numeric) for printing and Gantt
+    busy_times = []
+    fetch_times = []
+    for i in range(M):
+        # use x (not rounded) for consistency with solved model
+        wi = float(x[idx_w(i)])
+        ni = float(x[idx_n(i)])
+        s1i = float(x[idx_s1(i)])
+        s2i = float(x[idx_s2(i)])
+        s3i = float(x[idx_s3(i)])
+        ti = float(x[idx_t(i)])
 
-    return ILPResult(k=k, w=w_sol, n=n_sol, obj_value=float(obj_value))
+        s_disk_i = max(1.0, float(devs[i].s_disk))
+        penM1 = bprime / s_disk_i
+        penM2 = float(model.b_layer) / s_disk_i
+        penM3 = bprime / s_disk_i
+        penVRAM = penM2 if i in M2 else penM3
+
+        constB = float(c_vec[i])
+
+        busy = (
+            float(a[i]) * wi
+            + float(b[i]) * ni
+            + penM1 * s1i
+            + penM2 * s2i
+            + penM3 * s3i
+            + penVRAM * ti
+            + constB
+        )
+        fetch = (bprime / s_disk_i) * wi
+
+        busy_times.append(float(busy))
+        fetch_times.append(float(fetch))
+
+    # Debug prints + Gantt plot (as in the original code)
+    if k == 2:
+        # for parity with old Gurobi code:
+        for kprime in range(k):
+            for i in range(M):
+                print(
+                    "Prefetch time of device "
+                    + str(i)
+                    + " at round "
+                    + str(kprime)
+                    + " : "
+                    + str(fetch_times[i])
+                )
+                print(
+                    "Start of device "
+                    + str(i)
+                    + " at round "
+                    + str(kprime)
+                    + " : "
+                    + str(Start_val[i, kprime])
+                )
+                print(
+                    "Compute time of device "
+                    + str(i)
+                    + " at round "
+                    + str(kprime)
+                    + " : "
+                    + str(busy_times[i])
+                )
+                print(
+                    "End of device "
+                    + str(i)
+                    + " at round "
+                    + str(kprime)
+                    + " : "
+                    + str(End_val[i, kprime])
+                )
+                print("T_comm of device " + str(i) + " is: " + str(devs[i].t_comm))
+
+        plot_schedule_gantt_ordered(
+            devs=devs,
+            Start=Start_val,
+            End=End_val,
+            busy_times=busy_times,
+            fetch_times=fetch_times,
+            k=k,
+            title=f"HALDA timeline (k={k})",
+        )
+
+    # Objective value = End[M-1,k-1] + devs[M-1].t_comm + kappa
+    linear_val = float(res.fun)
+    obj_value = float(linear_val + float(devs[M - 1].t_comm) + kappa)
+
+    return ILPResult(k=k, w=w_sol, n=n_sol, obj_value=obj_value)
 
 
 def halda_solve(
@@ -373,7 +585,7 @@ def halda_solve(
     kv_bits: str = "8bit",
 ) -> HALDAResult:
     """
-    HALDA with SciPy MILP.
+    HALDA with SciPy MILP (HiGHS).
     """
     Ks = sorted(set(k_candidates)) if k_candidates else valid_factors_of_L(model.L)
     kv_factor = _kv_bits_to_factor(kv_bits)
@@ -382,9 +594,11 @@ def halda_solve(
     sets = assign_sets(devs)
 
     best_this_round: Optional[ILPResult] = None
-    per_k_objs: List[Tuple[int, Optional[float]]] = []  # (k, obj or None if infeasible)
+    per_k_objs: List[Tuple[int, Optional[float]]] = []
+
     if debug:
         print("Objectives by k")
+
     for kf in Ks:
         try:
             if debug:
@@ -407,20 +621,20 @@ def halda_solve(
             per_k_objs.append((kf, None))
             if debug:
                 print(f"  k={kf:<4d}  obj=infeasible")
+
     if best_this_round is None:
         raise RuntimeError("No feasible MILP found for any k this round.")
 
     w = list(best_this_round.w)
     n = list(best_this_round.n)
 
-    # track best overall
     if (best is None) or (best_this_round.obj_value < best.obj_value):
         best = HALDAResult(
             w=w,
             n=n,
             k=best_this_round.k,
             obj_value=best_this_round.obj_value,
-            sets={k: list(v) for k, v in sets.items()},
+            sets={kk: list(vv) for kk, vv in sets.items()},
         )
 
     if plot:
@@ -428,6 +642,6 @@ def halda_solve(
             per_k_objs,
             k_star=(best.k if best is not None else None),
             title="HALDA: k vs objective (final sweep)",
-            # save_path="k_vs_objective.png",  # uncomment to save a PNG instead of only showing
         )
+
     return best

@@ -27,7 +27,30 @@ def b_prime(
     kv_bits_k: float = 1.0,
     kv_bits_v: float | None = None,
     *,
-    rho_w: float = 0.15,
+    rho_w: float = 0.0, # for computation speed calculations
+    kv_group: int = 64,
+) -> int:
+    """
+    b'_mlx = (1 + rho_w) * b_layer
+             + (1 + 2/kv_group) * [ (h_k*e_k*kv_bits_k) + (h_v*e_v*kv_bits_v) ] * n_kv
+    - kv_bits_* are bytes/elem (1.0 -> 8-bit, 0.5 -> 4-bit)
+    - rho_w ~ 0.10..0.20; kv_group=64 -> +3.125% on KV for per-group scales
+    """
+    kv_bits_v = kv_bits_k if kv_bits_v is None else kv_bits_v
+    elems_k = model.hk * model.ek * model.n_kv
+    elems_v = model.hv * model.ev * model.n_kv
+    kv_bytes_nominal = kv_bits_k * elems_k + kv_bits_v * elems_v
+    scale_factor = 1.0 + (2.0 / float(max(1, kv_group)))  # 2 bytes per group
+    kv_bytes = scale_factor * kv_bytes_nominal
+    b_weights = (1.0 + float(rho_w)) * float(model.b_layer)
+    return int(b_weights + kv_bytes)
+
+def b_prime_adj(
+    model: ModelProfile,
+    kv_bits_k: float = 1.0,
+    kv_bits_v: float | None = None,
+    *,
+    rho_w: float = 0.15, # it was 0.15
     kv_group: int = 64,
 ) -> int:
     """
